@@ -41,11 +41,11 @@ from amzn_nova_forge.core.result import (
     TrainingResult,
 )
 from amzn_nova_forge.core.result.inference_result import InferenceResult
-from amzn_nova_forge.core.result.job_result import JobStatus
 from amzn_nova_forge.core.types import (
     DeploymentResult,
     EndpointInfo,
     ForgeConfig,
+    RecipeConfig,
     ValidationConfig,
 )
 from amzn_nova_forge.manager.runtime_manager import (
@@ -71,19 +71,6 @@ from amzn_nova_forge.telemetry.constants import (
 )
 from amzn_nova_forge.telemetry.telemetry_logging import (
     _telemetry_emitter,
-)
-from amzn_nova_forge.util.bedrock import (
-    BEDROCK_EXECUTION_ROLE_NAME,
-    DEPLOYMENT_ARN_NAME,
-    check_existing_deployment,
-    delete_existing_deployment,
-    find_bedrock_model_by_tag,
-    get_required_bedrock_deletion_permissions,
-    get_required_bedrock_update_permissions,
-    invoke_model,
-    monitor_model_create,
-    update_provisioned_throughput_model,
-    wait_for_model_ready,
 )
 from amzn_nova_forge.util.checkpoint_util import extract_checkpoint_path_from_job_output
 from amzn_nova_forge.util.data_mixing import DataMixing
@@ -515,7 +502,7 @@ class NovaModelCustomizer:
                 "Data mixing is not enabled for this customizer. Set data_mixing = True in 'NovaModelCustomizer' object."
             )
 
-        self.data_mixing.set_config(config, normalize=True)
+        self.data_mixing.set_config(config, normalize=True)  # type: ignore[arg-type]
 
     @_telemetry_emitter(
         Feature.TRAINING,
@@ -617,7 +604,7 @@ class NovaModelCustomizer:
         training_result = trainer.train(
             job_name=job_name,
             recipe_path=recipe_path,
-            overrides=overrides,
+            overrides=overrides,  # type: ignore[arg-type]
             rft_lambda_arn=rft_lambda_arn,
             dry_run=dry_run,
             rft_multiturn_infra=rft_multiturn_infra,
@@ -644,6 +631,51 @@ class NovaModelCustomizer:
         )
 
         return training_result
+
+    @_telemetry_emitter(
+        Feature.TRAINING,
+        "customizer.get_config",
+        extra_info_fn=lambda self, *args, **kwargs: {
+            "method": self.method,
+            "model": self.model.value,
+            "platform": self.platform,
+        },
+    )
+    def get_config(
+        self,
+        overrides: Optional[Dict[str, Any]] = None,
+    ) -> RecipeConfig:
+        """Return the overridable training configuration.
+
+        .. deprecated::
+            Use ``ForgeTrainer.get_config()`` instead.
+        """
+        warnings.warn(
+            "NovaModelCustomizer.get_config() is deprecated and will be removed in a future version. "
+            "Use ForgeTrainer.get_config() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
+        from amzn_nova_forge.trainer.forge_trainer import ForgeTrainer
+
+        trainer = ForgeTrainer(
+            model=self.model,
+            method=self.method,
+            infra=self.infra,
+            training_data_s3_path=self.data_s3_path,
+            model_s3_path=self.model_path,
+            data_mixing_enabled=self.data_mixing_enabled,
+            config=self._build_forge_config(),
+            region=self.region,
+            is_multimodal=self.is_multimodal,
+            hub_content_version=self.hub_content_version,
+        )
+
+        if self.data_mixing is not None:
+            trainer.data_mixing = self.data_mixing
+
+        return trainer.get_config(overrides=overrides)  # type: ignore[arg-type]
 
     @_telemetry_emitter(
         Feature.EVAL,
@@ -1242,8 +1274,8 @@ class NovaModelCustomizer:
                 limit=limit, start_from_head=start_from_head, end_time=end_time
             )
         else:
-            logger.info(
-                "No job_id and job_started_time found for this model, please call .train() or .evaluate() first."
+            raise ValueError(
+                "No job_id and job_started_time found. Call .train() or .evaluate() before calling .get_logs()."
             )
 
     @_telemetry_emitter(

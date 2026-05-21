@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from .core.data_mixing_config import DataMixingConfig
 from .core.enums import (
     DeploymentMode,
     DeployPlatform,
@@ -29,7 +30,15 @@ from .core.result.job_result import (
     BaseJobResult,
     JobStatus,
 )
-from .core.types import DeploymentResult, EndpointInfo, ForgeConfig, ModelArtifacts
+from .core.training_overrides import TrainingOverrides
+from .core.types import (
+    ConfigParameter,
+    DeploymentResult,
+    EndpointInfo,
+    ForgeConfig,
+    ModelArtifacts,
+    RecipeConfig,
+)
 from .dataset import (
     ArrowDatasetLoader,
     CSVDatasetLoader,
@@ -121,6 +130,10 @@ __all__ = [
     "DeployPlatform",
     "Platform",
     "NovaModelCustomizer",
+    "ConfigParameter",
+    "DataMixingConfig",
+    "RecipeConfig",
+    "TrainingOverrides",
     "ForgeConfig",
     "ForgeTrainer",
     "ForgeEvaluator",

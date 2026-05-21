@@ -21,6 +21,13 @@ between customer data and Nova curated data for SFT training.
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
+from amzn_nova_forge.core.constants import (
+    DATAMIX_CUSTOMER_DATA_FIELD,
+    DATAMIX_DATASET_CATALOG_FIELD,
+    DATAMIX_NOVA_PREFIX,
+    DATAMIX_PERCENT_SUFFIX,
+)
+from amzn_nova_forge.core.data_mixing_config import DataMixingConfig
 from amzn_nova_forge.util.logging import logger
 from amzn_nova_forge.validation.validator import Validator
 
@@ -41,12 +48,6 @@ class DataMixing:
         _dataset_catalog: Stores the dataset catalog value (read-only from template)
     """
 
-    # Constants for field name patterns
-    NOVA_PREFIX = "nova_"
-    PERCENT_SUFFIX = "_percent"
-    CUSTOMER_DATA_FIELD = "customer_data_percent"
-    DATASET_CATALOG_FIELD = "dataset_catalog"
-
     config: Dict[str, Any] = field(default_factory=dict)
     _default_nova_fields: set = field(default_factory=lambda: set(), init=False, repr=False)
     _dataset_catalog: Optional[Any] = field(default=None, init=False, repr=False)
@@ -60,15 +61,16 @@ class DataMixing:
         """
         result = self.config.copy()
         if self._dataset_catalog is not None:
-            result[self.DATASET_CATALOG_FIELD] = self._dataset_catalog
+            result[DATAMIX_DATASET_CATALOG_FIELD] = self._dataset_catalog
         return result
 
-    def set_config(self, config: Dict[str, Any], normalize: bool = True) -> None:
+    def set_config(self, config: DataMixingConfig, normalize: bool = True) -> None:
         """
         Set the data mixing configuration.
 
         Args:
-            config: Dictionary containing the data mixing configuration.
+            config: A DataMixingConfig TypedDict (or any dict matching that shape)
+                   containing the data mixing configuration.
                    Keys should include nova_*_percent fields and customer_data_percent.
                    Any nova_*_percent fields not specified will be set to 0 if normalize=True.
             normalize: If True, unspecified nova fields will be set to 0. Default is True.
@@ -76,37 +78,32 @@ class DataMixing:
         Raises:
             ValueError: If configuration is invalid or contains unknown nova fields
         """
-        if self.DATASET_CATALOG_FIELD in config:
+        config_dict = dict(config)
+
+        # Strip dataset_catalog with warning
+        if DATAMIX_DATASET_CATALOG_FIELD in config_dict:
             logger.warning(
-                f"{self.DATASET_CATALOG_FIELD} cannot be set in data mixing configuration. "
-                f"Ignoring value: {config[self.DATASET_CATALOG_FIELD]}"
+                "%s cannot be set in data mixing configuration. Ignoring value: %s",
+                DATAMIX_DATASET_CATALOG_FIELD,
+                config_dict[DATAMIX_DATASET_CATALOG_FIELD],
             )
+            del config_dict[DATAMIX_DATASET_CATALOG_FIELD]
+
+        # Filter None values
+        config_dict = {k: v for k, v in config_dict.items() if v is not None}
 
         # Create new config with normalization if needed
-        new_config = {}
+        new_config: Dict[str, Any] = {}
 
-        if normalize:
-            # Start with all known fields set to 0
-            if self._default_nova_fields or self.CUSTOMER_DATA_FIELD in self._default_nova_fields:
-                # Include nova fields
-                for field in self._default_nova_fields:
-                    new_config[field] = 0
-                # Include customer_data_percent if it's in defaults
-                if self.CUSTOMER_DATA_FIELD in self._default_nova_fields:
-                    new_config[self.CUSTOMER_DATA_FIELD] = 0
+        if normalize and self._default_nova_fields:
+            for f in self._default_nova_fields:
+                new_config[f] = 0
 
         # Update with provided config
-        new_config.update(config)
+        new_config.update(config_dict)
 
-        # Validate the configuration
-        Validator.validate_data_mixing_config(
-            new_config,
-            self.NOVA_PREFIX,
-            self.PERCENT_SUFFIX,
-            self.CUSTOMER_DATA_FIELD,
-            self.DATASET_CATALOG_FIELD,
-            self._default_nova_fields,
-        )
+        # Validate
+        Validator.validate_data_mixing_config(new_config)
 
         # Store the new config
         self.config = new_config
@@ -133,16 +130,16 @@ class DataMixing:
 
         default_config = {}
         for key, value in overrides_template.items():
-            if key.startswith(self.NOVA_PREFIX) and key.endswith(self.PERCENT_SUFFIX):
+            if key.startswith(DATAMIX_NOVA_PREFIX) and key.endswith(DATAMIX_PERCENT_SUFFIX):
                 self._default_nova_fields.add(key)
                 if isinstance(value, dict) and "default" in value:
                     default_config[key] = value["default"]
-            elif key == self.CUSTOMER_DATA_FIELD:
+            elif key == DATAMIX_CUSTOMER_DATA_FIELD:
                 # Add customer_data_percent to default fields
                 self._default_nova_fields.add(key)
                 if isinstance(value, dict) and "default" in value:
                     default_config[key] = value["default"]
-            elif key == self.DATASET_CATALOG_FIELD:
+            elif key == DATAMIX_DATASET_CATALOG_FIELD:
                 # Store dataset_catalog separately as it's read-only
                 if isinstance(value, dict) and "default" in value:
                     self._dataset_catalog = value["default"]
@@ -151,8 +148,8 @@ class DataMixing:
 
     def _is_data_mixing_field(self, key: str) -> bool:
         return (
-            (key.startswith(DataMixing.NOVA_PREFIX) and key.endswith(DataMixing.PERCENT_SUFFIX))
-            or key == DataMixing.CUSTOMER_DATA_FIELD
-            or DataMixing.NOVA_PREFIX + key + DataMixing.PERCENT_SUFFIX in self.get_config()
-            or key == DataMixing.DATASET_CATALOG_FIELD
+            (key.startswith(DATAMIX_NOVA_PREFIX) and key.endswith(DATAMIX_PERCENT_SUFFIX))
+            or key == DATAMIX_CUSTOMER_DATA_FIELD
+            or DATAMIX_NOVA_PREFIX + key + DATAMIX_PERCENT_SUFFIX in self.get_config()
+            or key == DATAMIX_DATASET_CATALOG_FIELD
         )

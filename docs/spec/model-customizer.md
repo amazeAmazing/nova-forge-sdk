@@ -248,6 +248,36 @@ print(f"Training job started: {result.job_id}")
 print(f"Checkpoint path: {result.model_artifacts.checkpoint_s3_path}")
 ```
 ---
+
+#### `get_config()`
+Returns the overridable training parameters. Delegates to `ForgeTrainer.get_config()`.
+
+> **Deprecated**: Use `ForgeTrainer.get_config()` instead.
+
+**Signature:**
+```python
+def get_config(
+ self,
+ overrides: Optional[Dict[str, Any]] = None,
+) -> RecipeConfig
+```
+
+**Parameters:**
+- `overrides` (Optional[Dict[str, Any]]): Optional overrides to merge with defaults
+
+**Returns:**
+- `RecipeConfig`: Frozen dataclass containing all overridable parameters with defaults and constraints. See `ForgeTrainer.get_config()` for details.
+
+**Example:**
+```python
+config = customizer.get_config()
+print(config)
+
+# With overrides
+config = customizer.get_config(overrides={"lr": 1e-5})
+print(config.to_dict())
+```
+---
 #### `evaluate()`
 Generates the recipe YAML, configures runtime, and launches an evaluation job.
 

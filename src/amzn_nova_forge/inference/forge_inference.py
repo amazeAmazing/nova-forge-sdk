@@ -327,17 +327,24 @@ class ForgeInference:
         """Stream CloudWatch logs for a batch inference job.
 
         Provide either a ``job_result`` or explicit ``job_id`` + ``started_time``.
+
+        Raises:
+            ValueError: If neither ``job_result`` nor both ``job_id`` and
+                ``started_time`` are provided, or if the platform cannot be
+                determined (no ``infra`` in constructor).
         """
         resolved_job_id = job_result.job_id if job_result else job_id
         resolved_started = job_result.started_time if job_result else started_time
 
         if not resolved_job_id or not resolved_started:
-            logger.info("Provide either a job_result or explicit job_id and started_time.")
-            return
+            raise ValueError(
+                "No job reference provided. Pass either a job_result or explicit job_id and started_time."
+            )
 
         if self._platform is None:
-            logger.info("Cannot determine platform — provide infra in the constructor.")
-            return
+            raise ValueError(
+                "Cannot determine platform. Provide infra in the ForgeInference constructor."
+            )
 
         platform: Platform = self._platform
         kwargs: Dict[str, Any] = {}

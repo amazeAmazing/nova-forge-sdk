@@ -41,10 +41,12 @@ from amzn_nova_forge.core.result import (
     TrainingResult,
 )
 from amzn_nova_forge.core.runtime import RuntimeManager
+from amzn_nova_forge.core.training_overrides import TrainingOverrides
 from amzn_nova_forge.core.types import (
     ForgeConfig,
     JobConfig,
     ModelArtifacts,
+    RecipeConfig,
     validate_region,
 )
 from amzn_nova_forge.manager.runtime_manager import SMHPRuntimeManager
@@ -226,7 +228,7 @@ class ForgeTrainer:
         self,
         job_name: str,
         recipe_path: Optional[str] = None,
-        overrides: Optional[Dict[str, Any]] = None,
+        overrides: Optional[TrainingOverrides] = None,
         rft_lambda_arn: Optional[str] = None,
         dry_run: bool = False,
         rft_multiturn_infra: Optional[RFTMultiturnInfrastructure] = None,
@@ -293,7 +295,7 @@ class ForgeTrainer:
             resolved_data_s3_path,
             resolved_image_uri,
         ) = recipe_builder.build_and_validate(
-            overrides=overrides,
+            overrides=dict(overrides) if overrides else {},
             input_recipe_path=recipe_path,
             output_recipe_path=self._config.generated_recipe_dir,
             validation_config=self._config.validation_config,
@@ -397,6 +399,52 @@ class ForgeTrainer:
 
         return training_result
 
+    @_telemetry_emitter(
+        Feature.TRAINING,
+        "forgetrainer.get_config",
+        extra_info_fn=lambda self, *args, **kwargs: {
+            "method": self.method,
+            "model": self.model,
+            "platform": self._platform,
+        },
+    )
+    def get_config(
+        self,
+        overrides: Optional[TrainingOverrides] = None,
+    ) -> RecipeConfig:
+        """Return overridable training parameters without starting a job.
+
+        Not supported for RFT_MULTITURN methods (rft_multiturn_infra
+        is not available outside of ``train()``).
+
+        Args:
+            overrides: Optional overrides to merge with defaults.
+
+        Returns:
+            Frozen RecipeConfig with all overridable parameters.
+        """
+        recipe_builder = RecipeBuilder(
+            region=self.region,
+            job_name="__config_preview__",
+            platform=self._platform,
+            model=self.model,
+            method=self.method,
+            instance_type=self.infra.instance_type,
+            instance_count=self.infra.instance_count,
+            infra=self.infra,
+            data_s3_path=self.training_data_s3_path,
+            output_s3_path=self.output_s3_path,
+            model_path=self.model_s3_path,
+            validation_data_s3_path=self.holdout_data_s3_path,
+            val_check_interval=self.val_check_interval,
+            data_mixing_instance=self.data_mixing,
+            image_uri_override=self._config.image_uri,
+            is_multimodal=self._is_multimodal,
+            mlflow_monitor=self._config.mlflow_monitor,
+            hub_content_version=self.hub_content_version,
+        )
+        return recipe_builder.get_overridable_config(overrides=overrides)  # type: ignore[arg-type]
+
     @_telemetry_emitter(Feature.TRAINING, "get_logs")
     def get_logs(
         self,
@@ -410,13 +458,18 @@ class ForgeTrainer:
         """Stream CloudWatch logs for a training job.
 
         Provide either a ``job_result`` or explicit ``job_id`` + ``started_time``.
+
+        Raises:
+            ValueError: If neither ``job_result`` nor both ``job_id`` and
+                ``started_time`` are provided.
         """
         resolved_job_id = job_result.job_id if job_result else job_id
         resolved_started = job_result.started_time if job_result else started_time
 
         if not resolved_job_id or not resolved_started:
-            logger.info("Provide either a job_result or explicit job_id and started_time.")
-            return
+            raise ValueError(
+                "No job reference provided. Pass either a job_result or explicit job_id and started_time."
+            )
 
         kwargs: Dict[str, Any] = {}
         if self._platform == Platform.SMHP:

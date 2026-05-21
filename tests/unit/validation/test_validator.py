@@ -2792,6 +2792,62 @@ class TestValidatorNoneTypeHandling(unittest.TestCase):
             f"Expected type error, got: {errors}",
         )
 
+    def test_none_value_accepted_when_not_required(self):
+        """None value must pass validation when the field is not required (e.g. reasoning_effort)."""
+        overrides_template = {
+            "reasoning_effort": {
+                "type": "str",
+                "required": False,
+                "enum": ["low", "medium", "high"],
+                "default": "medium",
+            },
+        }
+        recipe = {
+            "training_config": {
+                "reasoning_effort": None,
+            },
+        }
+        errors = []
+        Validator._validate_recipe(
+            recipe=recipe,
+            overrides_template=overrides_template,
+            instance_type="ml.p4d.24xlarge",
+            errors=errors,
+            method=TrainingMethod.RFT_LORA,
+            platform=Platform.SMTJ,
+            rft_lambda_arn="arn:aws:lambda:us-west-2:123456789012:function:reward-fn",
+        )
+        self.assertEqual(errors, [])
+
+    def test_none_value_required_str_field_without_null_enum_still_raises(self):
+        """None on a required str field must still error when null is NOT in the enum."""
+        overrides_template = {
+            "reasoning_effort": {
+                "type": "str",
+                "required": True,
+                "enum": ["low", "medium", "high"],
+                "default": "medium",
+            },
+        }
+        recipe = {
+            "training_config": {
+                "reasoning_effort": None,
+            },
+        }
+        errors = []
+        Validator._validate_recipe(
+            recipe=recipe,
+            overrides_template=overrides_template,
+            instance_type="ml.p4d.24xlarge",
+            errors=errors,
+            method=TrainingMethod.RFT_LORA,
+            platform=Platform.SMTJ,
+            rft_lambda_arn="arn:aws:lambda:us-west-2:123456789012:function:reward-fn",
+        )
+        self.assertEqual(len(errors), 1)
+        self.assertIn("expects str", errors[0])
+        self.assertIn("NoneType", errors[0])
+
 
 class TestValidationDataS3Path(unittest.TestCase):
     """Tests for validation_data_s3_path preflight validation."""

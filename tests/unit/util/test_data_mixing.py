@@ -15,10 +15,16 @@
 Unit tests for the DataMixing class.
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
+from amzn_nova_forge.core.constants import (
+    DATAMIX_CUSTOMER_DATA_FIELD,
+    DATAMIX_DATASET_CATALOG_FIELD,
+    DATAMIX_NOVA_PREFIX,
+    DATAMIX_PERCENT_SUFFIX,
+)
 from amzn_nova_forge.util.data_mixing import DataMixing
 
 
@@ -112,18 +118,17 @@ class TestDataMixing:
         with patch("amzn_nova_forge.util.data_mixing.logger") as mock_logger:
             data_mixing.set_config(config)
             mock_logger.warning.assert_called_once()
-            assert "dataset_catalog" in data_mixing.config
+            assert "dataset_catalog" not in data_mixing.config
             assert "nova_code_percent" in data_mixing.config
 
-    def test_set_config_invalid_nova_field(self):
-        """Test set_config with invalid nova field raises error."""
+    def test_set_config_accepts_unknown_nova_field(self):
+        """Test set_config accepts unknown nova fields."""
         data_mixing = DataMixing()
         data_mixing._default_nova_fields = {"nova_code_percent", "nova_general_percent"}
 
-        config = {"nova_invalid_percent": 50, "nova_code_percent": 50}
-
-        with pytest.raises(ValueError, match="Invalid nova field 'nova_invalid_percent'"):
-            data_mixing.set_config(config)
+        config = {"nova_new_percent": 50, "nova_code_percent": 50}
+        data_mixing.set_config(config)
+        assert data_mixing.config["nova_new_percent"] == 50
 
     def test_load_defaults_from_template(self):
         """Test loading defaults from template."""
@@ -198,9 +203,7 @@ class TestDataMixing:
             "nova_general_percent": 40,
             "customer_data_percent": 50,
         }
-        # Validation happens in set_config, not as a separate method
-        with patch("amzn_nova_forge.validation.validator.Validator.validate_data_mixing_config"):
-            data_mixing.set_config(config)  # Should not raise
+        data_mixing.set_config(config)
 
     def test_validate_nova_sum_not_100(self):
         """Test validation fails when nova fields don't sum to 100."""
@@ -211,12 +214,8 @@ class TestDataMixing:
             "customer_data_percent": 50,
         }
 
-        with patch(
-            "amzn_nova_forge.validation.validator.Validator.validate_data_mixing_config",
-            side_effect=ValueError("Nova data percentages must sum to 100"),
-        ):
-            with pytest.raises(ValueError, match="Nova data percentages must sum to 100"):
-                data_mixing.set_config(config)
+        with pytest.raises(ValueError, match="Nova data percentages must sum to 100"):
+            data_mixing.set_config(config)
 
     def test_validate_customer_data_out_of_range(self):
         """Test validation fails when customer_data_percent is out of range."""
@@ -226,12 +225,8 @@ class TestDataMixing:
             "customer_data_percent": 150,  # Out of range
         }
 
-        with patch(
-            "amzn_nova_forge.validation.validator.Validator.validate_data_mixing_config",
-            side_effect=ValueError("customer_data_percent must be between 0 and 100"),
-        ):
-            with pytest.raises(ValueError, match="customer_data_percent must be between 0 and 100"):
-                data_mixing.set_config(config)
+        with pytest.raises(ValueError, match="customer_data_percent must be between 0 and 100"):
+            data_mixing.set_config(config)
 
     def test_validate_nova_field_out_of_range(self):
         """Test validation fails when nova field is out of range."""
@@ -241,12 +236,23 @@ class TestDataMixing:
             "nova_general_percent": -50,  # Also out of range
         }
 
-        with patch(
-            "amzn_nova_forge.validation.validator.Validator.validate_data_mixing_config",
-            side_effect=ValueError("nova_code_percent must be between 0 and 100"),
-        ):
-            with pytest.raises(ValueError, match="nova_code_percent must be between 0 and 100"):
-                data_mixing.set_config(config)
+        with pytest.raises(ValueError, match="nova_code_percent must be between 0 and 100"):
+            data_mixing.set_config(config)
+
+    def test_validate_multiple_errors_surfaced(self):
+        """Test that multiple validation errors are all surfaced in one message."""
+        data_mixing = DataMixing()
+        config = {
+            "customer_data_percent": 150,
+            "nova_code_percent": -10,
+        }
+
+        with pytest.raises(ValueError) as exc_info:
+            data_mixing.set_config(config)
+
+        msg = str(exc_info.value)
+        assert "customer_data_percent" in msg
+        assert "nova_code_percent" in msg
 
     def test_validate_customer_100_with_nova_data(self):
         """Test validation fails when customer is 100% but nova data is non-zero."""
@@ -257,17 +263,8 @@ class TestDataMixing:
             "customer_data_percent": 100,
         }
 
-        with patch(
-            "amzn_nova_forge.validation.validator.Validator.validate_data_mixing_config",
-            side_effect=ValueError(
-                "Since customer_data_percent is 100 %, all nova data should sum to 0 %"
-            ),
-        ):
-            with pytest.raises(
-                ValueError,
-                match="Since customer_data_percent is 100 %, all nova data should sum to 0 %",
-            ):
-                data_mixing.set_config(config)
+        with pytest.raises(ValueError, match="should sum to 0"):
+            data_mixing.set_config(config)
 
     def test_validate_with_floating_point_sum(self):
         """Test validation handles floating point errors in sum."""
@@ -277,9 +274,7 @@ class TestDataMixing:
             "nova_general_percent": 33.33,
             "nova_math_percent": 33.34,  # Sum is 99.99999...
         }
-        # Validation happens in set_config
-        with patch("amzn_nova_forge.validation.validator.Validator.validate_data_mixing_config"):
-            data_mixing.set_config(config)  # Should not raise due to floating point tolerance
+        data_mixing.set_config(config)
 
     def test_validate_with_none_values(self):
         """Test validation handles None values correctly."""
@@ -289,9 +284,7 @@ class TestDataMixing:
             "nova_general_percent": None,
             "customer_data_percent": 50,
         }
-        # Validation happens in set_config
-        with patch("amzn_nova_forge.validation.validator.Validator.validate_data_mixing_config"):
-            data_mixing.set_config(config)  # Should not raise
+        data_mixing.set_config(config)
 
     def test_update_default_nova_fields(self):
         """Test that nova fields are added to defaults when set."""
@@ -315,10 +308,10 @@ class TestDataMixing:
 
     def test_constants(self):
         """Test class constants are defined correctly."""
-        assert DataMixing.NOVA_PREFIX == "nova_"
-        assert DataMixing.PERCENT_SUFFIX == "_percent"
-        assert DataMixing.CUSTOMER_DATA_FIELD == "customer_data_percent"
-        assert DataMixing.DATASET_CATALOG_FIELD == "dataset_catalog"
+        assert DATAMIX_NOVA_PREFIX == "nova_"
+        assert DATAMIX_PERCENT_SUFFIX == "_percent"
+        assert DATAMIX_CUSTOMER_DATA_FIELD == "customer_data_percent"
+        assert DATAMIX_DATASET_CATALOG_FIELD == "dataset_catalog"
 
     def test_set_config_adds_new_nova_fields_when_no_defaults(self):
         """Test that new nova fields are added to defaults when no template is loaded."""
@@ -327,8 +320,7 @@ class TestDataMixing:
         assert data_mixing._default_nova_fields == set()
 
         config = {"nova_new_percent": 100, "customer_data_percent": 50}
-        with patch("amzn_nova_forge.validation.validator.Validator.validate_data_mixing_config"):
-            data_mixing.set_config(config)
+        data_mixing.set_config(config)
 
         # Fields are not automatically added to defaults in current implementation
         # unless template is loaded first
@@ -350,8 +342,7 @@ class TestDataMixing:
             "nova_general_percent": 75,
             "customer_data_percent": 50,
         }
-        with patch("amzn_nova_forge.validation.validator.Validator.validate_data_mixing_config"):
-            data_mixing.set_config(new_config)
+        data_mixing.set_config(new_config)
 
         # Get and verify config
         config = data_mixing.get_config()
@@ -361,8 +352,7 @@ class TestDataMixing:
         """Test edge case with no nova fields."""
         data_mixing = DataMixing()
         config = {"customer_data_percent": 100}
-        with patch("amzn_nova_forge.validation.validator.Validator.validate_data_mixing_config"):
-            data_mixing.set_config(config)  # Should not raise
+        data_mixing.set_config(config)
 
     def test_edge_case_zero_customer_data(self):
         """Test edge case with 0% customer data."""
@@ -372,8 +362,7 @@ class TestDataMixing:
             "nova_general_percent": 30,
             "customer_data_percent": 0,
         }
-        with patch("amzn_nova_forge.validation.validator.Validator.validate_data_mixing_config"):
-            data_mixing.set_config(config)  # Should not raise
+        data_mixing.set_config(config)
 
     def test_load_defaults_with_non_dict_values(self):
         """Test loading defaults with non-dict values in template."""
@@ -418,8 +407,7 @@ class TestDataMixing:
 
         # Valid config 1
         config1 = {"nova_code_percent": 100, "customer_data_percent": 50}
-        with patch("amzn_nova_forge.validation.validator.Validator.validate_data_mixing_config"):
-            data_mixing.set_config(config1)
+        data_mixing.set_config(config1)
 
         # Valid config 2
         config2 = {
@@ -427,8 +415,7 @@ class TestDataMixing:
             "nova_general_percent": 70,
             "customer_data_percent": 80,
         }
-        with patch("amzn_nova_forge.validation.validator.Validator.validate_data_mixing_config"):
-            data_mixing.set_config(config2)
+        data_mixing.set_config(config2)
 
         # Invalid config
         config3 = {
@@ -436,12 +423,8 @@ class TestDataMixing:
             "nova_general_percent": 50,  # Sum is 80, not 100
             "customer_data_percent": 80,
         }
-        with patch(
-            "amzn_nova_forge.validation.validator.Validator.validate_data_mixing_config",
-            side_effect=ValueError("Invalid config"),
-        ):
-            with pytest.raises(ValueError):
-                data_mixing.set_config(config3)
+        with pytest.raises(ValueError):
+            data_mixing.set_config(config3)
 
     def test_validate_with_zero_nova_percentages(self):
         """Test validation with nova fields set to 0."""
@@ -452,8 +435,7 @@ class TestDataMixing:
             "nova_math_percent": 0,
             "customer_data_percent": 50,
         }
-        with patch("amzn_nova_forge.validation.validator.Validator.validate_data_mixing_config"):
-            data_mixing.set_config(config)  # Should not raise
+        data_mixing.set_config(config)
 
     def test_post_init_updates_default_fields(self):
         """Test that initialization sets correct default fields."""
@@ -468,10 +450,10 @@ class TestDataMixing:
         assert data_mixing._default_nova_fields == set()
 
     def test_precedence_with_new_nova_fields(self):
-        """Test precedence when new nova fields are introduced."""
+        """Test that new nova fields are accepted."""
         data_mixing = DataMixing()
 
-        # First load a template to establish known fields
+        # Load a template to establish known fields
         template = {
             "nova_code_percent": {"default": 50},
             "nova_general_percent": {"default": 50},
@@ -479,36 +461,19 @@ class TestDataMixing:
         }
         data_mixing._load_defaults_from_template(template)
 
-        # When template has been loaded, new fields can't be added dynamically
-        invalid_config = {
-            "nova_code_percent": 30,
-            "nova_general_percent": 30,
-            "nova_science_percent": 40,  # Invalid new field
-            "customer_data_percent": 70,
-        }
-
-        # Should reject the new field
-        with pytest.raises(ValueError, match="Invalid nova field 'nova_science_percent'"):
-            data_mixing.set_config(invalid_config)
-
-        # But if no template is loaded, all nova fields can be added
-        data_mixing2 = DataMixing()
-
-        # Without template, new nova fields can be added
+        # New nova fields are accepted even with a template loaded
         config_with_new_field = {
             "nova_code_percent": 30,
             "nova_general_percent": 30,
             "nova_science_percent": 40,
             "customer_data_percent": 70,
         }
-        # This should work without template
-        data_mixing2.set_config(config_with_new_field)
+        data_mixing.set_config(config_with_new_field)
 
-        # Verify fields were added
-        assert data_mixing2.config["nova_code_percent"] == 30
-        assert data_mixing2.config["nova_general_percent"] == 30
-        assert data_mixing2.config["nova_science_percent"] == 40
-        assert data_mixing2.config["customer_data_percent"] == 70
+        assert data_mixing.config["nova_code_percent"] == 30
+        assert data_mixing.config["nova_general_percent"] == 30
+        assert data_mixing.config["nova_science_percent"] == 40
+        assert data_mixing.config["customer_data_percent"] == 70
 
     def test_precedence_normalization_behavior(self):
         """Test how normalization affects precedence scenarios."""
@@ -569,7 +534,7 @@ class TestDataMixing:
         full_config = data_mixing.get_config()
         assert full_config["dataset_catalog"] == "catalog_v1"
 
-        # Try to override dataset_catalog (should be rejected)
+        # Try to override dataset_catalog (should be stripped by validation)
         override_config = {
             "nova_code_percent": 100,
             "customer_data_percent": 60,
@@ -607,10 +572,8 @@ class TestDataMixing:
         with pytest.raises(ValueError, match="Nova data percentages must sum to 100"):
             data_mixing.set_config(invalid_config)
 
-        # In the current implementation, config is updated before validation
-        # so if validation fails, the config is left in an invalid state
-        assert data_mixing.config["nova_code_percent"] == 50  # Changed despite error
-        assert data_mixing.config["nova_general_percent"] == 50  # Changed despite error
+        assert data_mixing.config["nova_code_percent"] == 50
+        assert data_mixing.config["nova_general_percent"] == 50
 
     def test_precedence_with_none_values(self):
         """Test precedence handling with None values in configs."""
@@ -624,17 +587,15 @@ class TestDataMixing:
         }
         data_mixing._load_defaults_from_template(template)
 
-        # Config with None values (should be handled gracefully)
         config_with_none = {
             "nova_code_percent": 100,
-            "nova_general_percent": None,  # None value
+            "nova_general_percent": None,
             "customer_data_percent": 50,
         }
-        with patch("amzn_nova_forge.validation.validator.Validator.validate_data_mixing_config"):
-            data_mixing.set_config(config_with_none, normalize=False)
+        data_mixing.set_config(config_with_none, normalize=False)
 
         assert data_mixing.config["nova_code_percent"] == 100
-        assert data_mixing.config["nova_general_percent"] is None
+        assert "nova_general_percent" not in data_mixing.config
         assert data_mixing.config["customer_data_percent"] == 50
 
     def test_is_data_mixing_field_nova_percent_fields(self):

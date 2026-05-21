@@ -164,6 +164,49 @@ print(f"Checkpoint path: {result.model_artifacts.checkpoint_s3_path}")
 ```
 ---
 
+##### `get_config()`
+Returns the overridable training parameters for the current model/method/platform without starting a job or running validation. Use this to inspect defaults, valid ranges, and available parameters before calling `train()`.
+
+**Signature:**
+```python
+def get_config(
+    self,
+    overrides: Optional[TrainingOverrides] = None,
+) -> RecipeConfig
+```
+
+**Parameters:**
+- `overrides` (Optional[TrainingOverrides]): Optional overrides to merge with defaults. When provided, `ConfigParameter.default` values in the result reflect the merged values. Plain `dict` values are also accepted
+
+**Returns:**
+- `RecipeConfig`: Frozen dataclass with:
+  - `model` (Model): The model
+  - `method` (TrainingMethod): The training method
+  - `platform` (Platform): The infrastructure platform
+  - `parameters` (tuple[ConfigParameter, ...]): All overridable parameters, each with `name`, `type`, `default`, `description`, `min`, `max`, `enum`, `required`
+  - `to_dict()`: Returns `{name: default}` mapping directly passable to `train(overrides=...)`
+
+**Example:**
+```python
+# Inspect default configuration
+config = trainer.get_config()
+print(config)
+# RecipeConfig(model=NOVA_MICRO, method=SFT_LORA, platform=SMTJ)
+#   lr: float = 5e-06 [1e-06..0.0001]
+#   max_epochs: integer = 2 [1..5]
+#   warmup_steps: integer = 10 [0..100]
+#   global_batch_size: integer = 64 [1..512]
+
+# Preview with your overrides applied
+config = trainer.get_config(overrides={"lr": 1e-5, "max_epochs": 4})
+print(config.to_dict())
+# {"lr": 1e-5, "max_epochs": 4, "warmup_steps": 10, "global_batch_size": 64, ...}
+```
+
+**Note:** `get_config()` is not supported for `RFT_MULTITURN_*` training methods. For those methods, use `train(dry_run=True)` to inspect the recipe.
+
+---
+
 ##### `get_logs()`
 Retrieves and displays CloudWatch logs for a training job.
 

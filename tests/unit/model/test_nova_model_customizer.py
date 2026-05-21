@@ -1030,6 +1030,12 @@ class TestNovaModelCustomizer(unittest.TestCase):
             # is_multimodal was not touched by model setter
             self.assertTrue(customizer.is_multimodal)
 
+    def test_get_logs_without_job_state_raises_value_error(self):
+        with self.assertRaises(ValueError) as ctx:
+            self.customizer.get_logs()
+
+        self.assertIn(".train()", str(ctx.exception))
+
 
 class TestTrain(TestNovaModelCustomizer):
     @patch("amzn_nova_forge.recipe.recipe_builder.RecipeBuilder.build_and_validate")
@@ -4744,6 +4750,101 @@ class TestDataMixingServerlessPlatform(unittest.TestCase):
                 data_mixing_enabled=True,
             )
         self.assertIn("Data mixing is only supported for", str(ctx.exception))
+
+
+class TestNovaModelCustomizerGetConfig(unittest.TestCase):
+    def setUp(self):
+        self.model = Model.NOVA_MICRO
+        self.method = TrainingMethod.SFT_LORA
+        self.data_s3_path = "s3://test-bucket/data"
+        self.output_s3_path = "s3://test-bucket/output"
+
+        self.mock_runtime_manager = create_autospec(SMTJRuntimeManager)
+        self.mock_runtime_manager.platform = Platform.SMTJ
+        self.mock_runtime_manager.instance_count = 2
+        self.mock_runtime_manager.kms_key_id = None
+
+        p_session = patch("boto3.session.Session")
+        mock_session = p_session.start()
+        self.addCleanup(p_session.stop)
+        type(mock_session.return_value).region_name = PropertyMock(return_value="us-east-1")
+
+        p_set_output = patch(
+            "amzn_nova_forge.model.nova_model_customizer.set_output_s3_path",
+            return_value="s3://sagemaker-nova-123456789012-us-east-1/output",
+        )
+        p_set_output.start()
+        self.addCleanup(p_set_output.stop)
+
+    def _make_customizer(self):
+        return NovaModelCustomizer(
+            model=self.model,
+            method=self.method,
+            infra=self.mock_runtime_manager,
+            data_s3_path=self.data_s3_path,
+            output_s3_path=self.output_s3_path,
+        )
+
+    @patch("amzn_nova_forge.trainer.forge_trainer.ForgeTrainer.get_config")
+    @patch("amzn_nova_forge.trainer.forge_trainer.ForgeTrainer.__init__", return_value=None)
+    def test_get_config_emits_deprecation_warning(self, mock_init, mock_get_config):
+        from amzn_nova_forge.core.types import RecipeConfig
+
+        mock_get_config.return_value = RecipeConfig(
+            model=self.model,
+            method=self.method,
+            platform=Platform.SMTJ,
+            parameters=(),
+        )
+
+        customizer = self._make_customizer()
+        with self.assertWarns(DeprecationWarning):
+            customizer.get_config()
+
+    @patch("amzn_nova_forge.trainer.forge_trainer.ForgeTrainer.get_config")
+    @patch("amzn_nova_forge.trainer.forge_trainer.ForgeTrainer.__init__", return_value=None)
+    def test_get_config_delegates_to_forge_trainer(self, mock_init, mock_get_config):
+        from amzn_nova_forge.core.types import ConfigParameter, RecipeConfig
+
+        expected = RecipeConfig(
+            model=self.model,
+            method=self.method,
+            platform=Platform.SMTJ,
+            parameters=(ConfigParameter(name="lr", type="float", default=5e-6),),
+        )
+        mock_get_config.return_value = expected
+
+        customizer = self._make_customizer()
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            result = customizer.get_config()
+
+        self.assertEqual(result, expected)
+        mock_get_config.assert_called_once_with(overrides=None)
+
+    @patch("amzn_nova_forge.trainer.forge_trainer.ForgeTrainer.get_config")
+    @patch("amzn_nova_forge.trainer.forge_trainer.ForgeTrainer.__init__", return_value=None)
+    def test_get_config_passes_overrides(self, mock_init, mock_get_config):
+        from amzn_nova_forge.core.types import RecipeConfig
+
+        mock_get_config.return_value = RecipeConfig(
+            model=self.model,
+            method=self.method,
+            platform=Platform.SMTJ,
+            parameters=(),
+        )
+
+        customizer = self._make_customizer()
+        overrides = {"lr": 1e-5}
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            customizer.get_config(overrides=overrides)
+
+        mock_get_config.assert_called_once_with(overrides=overrides)
 
 
 if __name__ == "__main__":
