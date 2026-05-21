@@ -224,12 +224,17 @@ class ForgeDeployer:
         endpoint_arn: Optional[str] = None,
         platform: Optional[DeployPlatform] = None,
     ) -> None:
-        """Log deployment status information."""
+        """Log deployment status information.
+
+        Raises:
+            ValueError: If neither ``job_result`` nor ``endpoint_arn`` is provided.
+        """
         arn = endpoint_arn or (job_result.endpoint.uri if job_result else None)
 
         if not arn:
-            logger.info("No endpoint ARN available. Call deploy() first.")
-            return
+            raise ValueError(
+                "No endpoint ARN available. Pass either a job_result from deploy() or an explicit endpoint_arn."
+            )
 
         if job_result is not None:
             platform = job_result.endpoint.platform

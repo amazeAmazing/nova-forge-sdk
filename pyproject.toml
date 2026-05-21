@@ -21,7 +21,7 @@ dependencies = [
     "filetype",
     "matplotlib",
     "pydantic>=2.0",
-    "pyarrow",
+    "pyarrow>=14.0.1",
     "sagemaker>=3.5.0",
 ]
 [project.optional-dependencies]

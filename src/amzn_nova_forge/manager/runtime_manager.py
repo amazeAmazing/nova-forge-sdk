@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import enum
+import hashlib
 import io
 import json
 import os
@@ -75,6 +76,10 @@ _METHOD_TO_SERVERLESS_CONFIG: Dict[TrainingMethod, tuple[str, Optional[str]]] = 
 }
 DEFAULT_SMTJ_JOB_MAX_RUNTIME = 86400  # 1 day
 DEFAULT_SMTJ_JOB_SUBMIT_POLL_TIMEOUT = 30  # seconds to poll for job after submission
+
+_BUNDLED_WHL_SHA256 = {
+    "agi_data_curator-1.0.0-py3-none-any.whl": "18d631f2a367dc744d34ac3b3e1cd8718a4fe3a859a79d63c29472169e7abba1",
+}
 
 DEFAULT_DATAPREP_MAX_JOB_RUNTIME = 3600
 DEFAULT_VOLUME_SIZE_GB = 100
@@ -822,9 +827,20 @@ class SMTJDataPrepRuntimeManager(RuntimeManager):
                 site_dirs = site.getsitepackages()
                 target = site_dirs[0] if site_dirs else site.getusersitepackages()
                 logger.info("Extracting bundled wheels to %s: %s", target, whls)
+                target_abs = os.path.realpath(target)
                 for whl_path in whls:
                     with zipfile.ZipFile(whl_path, "r") as zf:
-                        zf.extractall(target)
+                        for name in zf.namelist():
+                            # Reject absolute paths and path traversal
+                            if os.path.isabs(name) or name.startswith("/"):
+                                raise RuntimeError(f"Unsafe absolute path: {name!r} in {whl_path}")
+                            resolved = os.path.realpath(os.path.join(target_abs, name))
+                            if (
+                                resolved != target_abs
+                                and not resolved.startswith(target_abs + os.sep)
+                            ):
+                                raise RuntimeError(f"Unsafe path traversal: {name!r} in {whl_path}")
+                        zf.extractall(target_abs)
 
             if pip_install:
                 logger.info("Installing additional packages: %s", pip_install)
@@ -1125,6 +1141,14 @@ class SMTJDataPrepRuntimeManager(RuntimeManager):
         deps_prefix = f"{self.s3_artifact_prefix}/deps"
         for whl_name in whl_names:
             whl_bytes = bundled.joinpath(whl_name).read_bytes()
+            expected_sha = _BUNDLED_WHL_SHA256.get(whl_name)
+            if expected_sha:
+                actual_sha = hashlib.sha256(whl_bytes).hexdigest()
+                if actual_sha != expected_sha:
+                    raise RuntimeError(
+                        f"Integrity check failed for bundled wheel {whl_name}: "
+                        f"expected sha256 {expected_sha}, got {actual_sha}"
+                    )
             whl_key = f"{deps_prefix}/{whl_name}"
             self.s3_client.put_object(
                 Bucket=self.s3_artifact_bucket,

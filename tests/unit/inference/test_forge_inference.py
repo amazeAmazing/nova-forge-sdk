@@ -541,30 +541,42 @@ class TestForgeInferenceGetLogs(unittest.TestCase):
             limit=None, start_from_head=False, end_time=None
         )
 
-    @patch("amzn_nova_forge.inference.forge_inference.logger")
-    def test_get_logs_missing_params_logs_info(self, mock_logger):
+    def test_get_logs_missing_params_raises_value_error(self):
         inf = self._make_inference_with_platform(Platform.SMTJ)
 
-        inf.get_logs()  # No job_result, no job_id, no started_time
+        with self.assertRaises(ValueError) as ctx:
+            inf.get_logs()  # No job_result, no job_id, no started_time
 
-        mock_logger.info.assert_called_once_with(
-            "Provide either a job_result or explicit job_id and started_time."
-        )
+        self.assertIn("job_result", str(ctx.exception))
 
-    @patch("amzn_nova_forge.inference.forge_inference.logger")
-    def test_get_logs_no_platform_logs_info(self, mock_logger):
+    def test_get_logs_job_id_only_raises_value_error(self):
+        inf = self._make_inference_with_platform(Platform.SMTJ)
+
+        with self.assertRaises(ValueError) as ctx:
+            inf.get_logs(job_id="some-job")
+
+        self.assertIn("job_result", str(ctx.exception))
+
+    def test_get_logs_started_time_only_raises_value_error(self):
+        inf = self._make_inference_with_platform(Platform.SMTJ)
+
+        with self.assertRaises(ValueError) as ctx:
+            inf.get_logs(started_time=datetime(2024, 1, 1, tzinfo=timezone.utc))
+
+        self.assertIn("job_result", str(ctx.exception))
+
+    def test_get_logs_no_platform_raises_value_error(self):
         with patch("boto3.session.Session") as mock_session:
             type(mock_session.return_value).region_name = PropertyMock(return_value="us-east-1")
             inf = ForgeInference(region="us-east-1")  # No infra -> no platform
 
-        inf.get_logs(
-            job_id="job-xyz",
-            started_time=datetime(2024, 1, 1, tzinfo=timezone.utc),
-        )
+        with self.assertRaises(ValueError) as ctx:
+            inf.get_logs(
+                job_id="job-xyz",
+                started_time=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            )
 
-        mock_logger.info.assert_called_once_with(
-            "Cannot determine platform — provide infra in the constructor."
-        )
+        self.assertIn("platform", str(ctx.exception))
 
     @patch("amzn_nova_forge.inference.forge_inference.CloudWatchLogMonitor")
     def test_get_logs_smhp_includes_cluster_and_namespace(self, mock_monitor_cls):

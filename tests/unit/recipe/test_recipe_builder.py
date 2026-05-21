@@ -4151,5 +4151,360 @@ class TestRecipeBuilderMlflowPlaceholder(unittest.TestCase):
         self.assertNotIn("{{mlflow_tracking_uri}}", raw)
 
 
+class TestGetOverridableConfig(unittest.TestCase):
+    def setUp(self):
+        self.region = "us-east-1"
+        self.platform = Platform.SMTJ
+        self.method = TrainingMethod.SFT_LORA
+
+        self.mock_model = Mock(spec=Model)
+        self.mock_model.name = "nova-micro"
+        self.mock_model.value = "nova_micro"
+        self.mock_model.version = Version.ONE
+        self.mock_model.model_type = "test-model"
+        self.mock_model.model_path = "models/test"
+
+        self.mock_infra = Mock(spec=RuntimeManager)
+        self.mock_infra.instance_type = "ml.g5.12xlarge"
+        self.mock_infra.instance_count = 1
+
+        self.overrides_template = {
+            "lr": {
+                "type": "float",
+                "default": 5e-6,
+                "min": 1e-6,
+                "max": 1e-4,
+                "description": "Learning rate",
+            },
+            "max_epochs": {
+                "type": "integer",
+                "default": 2,
+                "min": 1,
+                "max": 5,
+                "description": "Max epochs",
+            },
+            "reasoning_effort": {
+                "type": "string",
+                "default": "medium",
+                "enum": ["low", "medium", "high"],
+            },
+            "model_type": {"type": "string", "default": "test-model"},
+            "model_name_or_path": {"type": "string", "default": "models/test"},
+            "peft_scheme": {"type": "string", "default": "lora"},
+            "name": {"type": "string", "default": "job"},
+            "data_s3_path": {"type": "string", "default": "s3://bucket/data"},
+            "output_s3_path": {"type": "string", "default": "s3://bucket/output"},
+            "task": {"type": "string", "default": "sft"},
+        }
+        self.recipe_template = {"run": {"lr": "{{lr}}", "max_epochs": "{{max_epochs}}"}}
+
+        self.load_patcher = patch("amzn_nova_forge.recipe.recipe_builder.load_recipe_templates")
+        self.mock_load = self.load_patcher.start()
+        self.mock_load.return_value = (
+            None,
+            self.recipe_template,
+            self.overrides_template,
+            "test-image-uri",
+        )
+        self.addCleanup(self.load_patcher.stop)
+
+    def _make_builder(self, **kwargs):
+        defaults = dict(
+            region=self.region,
+            job_name="__config_preview__",
+            platform=self.platform,
+            model=self.mock_model,
+            method=self.method,
+            instance_type="ml.g5.12xlarge",
+            instance_count=1,
+            infra=self.mock_infra,
+            output_s3_path="s3://bucket/output",
+            data_s3_path="s3://bucket/data",
+        )
+        defaults.update(kwargs)
+        return RecipeBuilder(**defaults)
+
+    def test_returns_recipe_config(self):
+        from amzn_nova_forge.core.types import RecipeConfig
+
+        builder = self._make_builder()
+        config = builder.get_overridable_config()
+        self.assertIsInstance(config, RecipeConfig)
+        self.assertEqual(config.model, self.mock_model)
+        self.assertEqual(config.method, self.method)
+        self.assertEqual(config.platform, self.platform)
+
+    def test_excludes_non_overridable_keys(self):
+        builder = self._make_builder()
+        config = builder.get_overridable_config()
+        param_names = {p.name for p in config.parameters}
+        for excluded in (
+            "model_type",
+            "model_name_or_path",
+            "peft_scheme",
+            "name",
+            "data_s3_path",
+            "output_s3_path",
+            "task",
+        ):
+            self.assertNotIn(excluded, param_names)
+
+    def test_includes_overridable_keys(self):
+        builder = self._make_builder()
+        config = builder.get_overridable_config()
+        param_names = {p.name for p in config.parameters}
+        self.assertIn("lr", param_names)
+        self.assertIn("max_epochs", param_names)
+        self.assertIn("reasoning_effort", param_names)
+
+    def test_preserves_constraints(self):
+        builder = self._make_builder()
+        config = builder.get_overridable_config()
+        lr_param = next(p for p in config.parameters if p.name == "lr")
+        self.assertEqual(lr_param.min, 1e-6)
+        self.assertEqual(lr_param.max, 1e-4)
+        self.assertEqual(lr_param.description, "Learning rate")
+
+    def test_preserves_enum(self):
+        builder = self._make_builder()
+        config = builder.get_overridable_config()
+        effort_param = next(p for p in config.parameters if p.name == "reasoning_effort")
+        self.assertEqual(effort_param.enum, ("low", "medium", "high"))
+
+    def test_with_overrides_merges_into_defaults(self):
+        builder = self._make_builder()
+        config = builder.get_overridable_config(overrides={"lr": 1e-5})
+        lr_param = next(p for p in config.parameters if p.name == "lr")
+        self.assertEqual(lr_param.default, 1e-5)
+
+    def test_skips_non_dict_metadata(self):
+        self.overrides_template["stray_string"] = "not a dict"
+        self.overrides_template["stray_int"] = 42
+        builder = self._make_builder()
+        config = builder.get_overridable_config()
+        param_names = {p.name for p in config.parameters}
+        self.assertNotIn("stray_string", param_names)
+        self.assertNotIn("stray_int", param_names)
+
+    def test_config_is_frozen(self):
+        builder = self._make_builder()
+        config = builder.get_overridable_config()
+        with self.assertRaises(AttributeError):
+            config.model = self.mock_model
+
+
+class TestReasoningEffortNoneOverride(unittest.TestCase):
+    """Tests for reasoning_effort=None override handling."""
+
+    def setUp(self):
+        self.region = "us-east-1"
+        self.job_name = "test-reasoning-none"
+        self.platform = Platform.SMTJ
+        self.instance_type = "ml.p5.48xlarge"
+        self.instance_count = 4
+        self.data_s3 = "s3://bucket/rft-data.jsonl"
+        self.output_s3 = "s3://bucket/output"
+
+        self.mock_model = Mock(spec=Model)
+        self.mock_model.name = "NOVA_LITE_2"
+        self.mock_model.value = "nova_lite_2"
+        self.mock_model.version = Version.TWO
+        self.mock_model.model_type = "nova_lite_2"
+        self.mock_model.model_path = "models/nova-lite-2"
+
+        self.mock_infra = Mock(spec=RuntimeManager)
+        self.mock_infra.instance_type = self.instance_type
+        self.mock_infra.instance_count = self.instance_count
+        self.mock_infra.platform = Platform.SMTJ
+
+    @patch("amzn_nova_forge.util.recipe._get_smhp_replicas_enum", return_value=None)
+    @patch("amzn_nova_forge.util.recipe.get_hub_recipe_metadata")
+    @patch("amzn_nova_forge.util.recipe.download_templates_from_s3")
+    def test_reasoning_effort_none_passes_validation(
+        self, mock_download, mock_metadata, _mock_replicas
+    ):
+        """reasoning_effort=None override must not raise ValueError during build_and_validate."""
+        mock_metadata.return_value = {"recipe_uri": "s3://bucket/recipe"}
+
+        recipe_template = {
+            "run": {
+                "name": "{{name}}",
+                "replicas": 1,
+                "lambda_arn": "{{reward_lambda_arn}}",
+            },
+            "training_config": {
+                "max_steps": "{{max_steps}}",
+                "lr": "{{lr}}",
+                "reasoning_effort": "medium",
+            },
+        }
+
+        overrides_template = {
+            "name": {"default": "", "type": "string", "required": True},
+            "reward_lambda_arn": {"default": "", "type": "string", "required": True},
+            "max_steps": {"default": 100, "type": "integer", "min": 1, "max": 10000},
+            "lr": {"default": 5e-6, "type": "float"},
+            "reasoning_effort": {
+                "type": "string",
+                "enum": ["low", "medium", "high"],
+                "default": "medium",
+            },
+        }
+
+        mock_download.return_value = (recipe_template, overrides_template, "image_uri")
+
+        rft_lambda = "arn:aws:lambda:us-east-1:123456789012:function:reward"
+        builder = RecipeBuilder(
+            region=self.region,
+            job_name=self.job_name,
+            platform=self.platform,
+            model=self.mock_model,
+            method=TrainingMethod.RFT_LORA,
+            instance_type=self.instance_type,
+            instance_count=self.instance_count,
+            infra=self.mock_infra,
+            output_s3_path=self.output_s3,
+            data_s3_path=self.data_s3,
+            rft_lambda_arn=rft_lambda,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = os.path.join(tmpdir, "recipe.yaml")
+            recipe_path, *_ = builder.build_and_validate(
+                output_recipe_path=output_path,
+                overrides={"reasoning_effort": None},
+                validation_config=ValidationConfig(iam=False, infra=False, recipe=True),
+            )
+
+            with open(recipe_path, "r") as f:
+                recipe = yaml.safe_load(f)
+
+            assert recipe["training_config"]["reasoning_effort"] is None
+
+    @patch("amzn_nova_forge.util.recipe._get_smhp_replicas_enum", return_value=None)
+    @patch("amzn_nova_forge.util.recipe.get_hub_recipe_metadata")
+    @patch("amzn_nova_forge.util.recipe.download_templates_from_s3")
+    def test_reasoning_effort_none_placeholder_path_still_validates(
+        self, mock_download, mock_metadata, _mock_replicas
+    ):
+        """reasoning_effort=None on a {{placeholder}}-same-key template still raises.
+
+        The fix only targets the literal-value branch (line 575-585). When the
+        template uses {{reasoning_effort}} as a placeholder, the overrides_template
+        retains its original required: True, so None is correctly rejected.
+        """
+        mock_metadata.return_value = {"recipe_uri": "s3://bucket/recipe"}
+
+        recipe_template = {
+            "run": {
+                "name": "{{name}}",
+                "replicas": 1,
+                "lambda_arn": "{{reward_lambda_arn}}",
+            },
+            "training_config": {
+                "max_steps": "{{max_steps}}",
+                "lr": "{{lr}}",
+                "reasoning_effort": "{{reasoning_effort}}",
+            },
+        }
+
+        overrides_template = {
+            "name": {"default": "", "type": "string", "required": True},
+            "reward_lambda_arn": {"default": "", "type": "string", "required": True},
+            "max_steps": {"default": 100, "type": "integer", "min": 1, "max": 10000},
+            "lr": {"default": 5e-6, "type": "float"},
+            "reasoning_effort": {
+                "type": "string",
+                "required": True,
+                "enum": ["low", "medium", "high"],
+                "default": "medium",
+            },
+        }
+
+        mock_download.return_value = (recipe_template, overrides_template, "image_uri")
+
+        rft_lambda = "arn:aws:lambda:us-east-1:123456789012:function:reward"
+        builder = RecipeBuilder(
+            region=self.region,
+            job_name=self.job_name,
+            platform=self.platform,
+            model=self.mock_model,
+            method=TrainingMethod.RFT_LORA,
+            instance_type=self.instance_type,
+            instance_count=self.instance_count,
+            infra=self.mock_infra,
+            output_s3_path=self.output_s3,
+            data_s3_path=self.data_s3,
+            rft_lambda_arn=rft_lambda,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = os.path.join(tmpdir, "recipe.yaml")
+            with self.assertRaises(ValueError) as ctx:
+                builder.build_and_validate(
+                    output_recipe_path=output_path,
+                    overrides={"reasoning_effort": None},
+                    validation_config=ValidationConfig(iam=False, infra=False, recipe=True),
+                )
+            self.assertIn("expects string", str(ctx.exception))
+            self.assertIn("NoneType", str(ctx.exception))
+
+    @patch("amzn_nova_forge.util.recipe._get_smhp_replicas_enum", return_value=None)
+    @patch("amzn_nova_forge.util.recipe.get_hub_recipe_metadata")
+    @patch("amzn_nova_forge.util.recipe.download_templates_from_s3")
+    def test_non_nullable_field_none_still_raises(
+        self, mock_download, mock_metadata, _mock_replicas
+    ):
+        """max_steps=None must still raise — only fields typed as X | None are nullable."""
+        mock_metadata.return_value = {"recipe_uri": "s3://bucket/recipe"}
+
+        recipe_template = {
+            "run": {
+                "name": "{{name}}",
+                "replicas": 1,
+                "lambda_arn": "{{reward_lambda_arn}}",
+            },
+            "training_config": {
+                "max_steps": 100,
+                "lr": "{{lr}}",
+            },
+        }
+
+        overrides_template = {
+            "name": {"default": "", "type": "string", "required": True},
+            "reward_lambda_arn": {"default": "", "type": "string", "required": True},
+            "max_steps": {"default": 100, "type": "integer", "min": 1, "max": 10000},
+            "lr": {"default": 5e-6, "type": "float"},
+        }
+
+        mock_download.return_value = (recipe_template, overrides_template, "image_uri")
+
+        rft_lambda = "arn:aws:lambda:us-east-1:123456789012:function:reward"
+        builder = RecipeBuilder(
+            region=self.region,
+            job_name=self.job_name,
+            platform=self.platform,
+            model=self.mock_model,
+            method=TrainingMethod.RFT_LORA,
+            instance_type=self.instance_type,
+            instance_count=self.instance_count,
+            infra=self.mock_infra,
+            output_s3_path=self.output_s3,
+            data_s3_path=self.data_s3,
+            rft_lambda_arn=rft_lambda,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = os.path.join(tmpdir, "recipe.yaml")
+            with self.assertRaises(ValueError) as ctx:
+                builder.build_and_validate(
+                    output_recipe_path=output_path,
+                    overrides={"max_steps": None},
+                    validation_config=ValidationConfig(iam=False, infra=False, recipe=True),
+                )
+            self.assertIn("expects int", str(ctx.exception))
+            self.assertIn("NoneType", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

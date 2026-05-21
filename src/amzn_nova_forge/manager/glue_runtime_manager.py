@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -43,6 +44,7 @@ from amzn_nova_forge.util.s3_utils import (
 
 GLUE_IAM_ROLE_NAME = "GlueDataPrepExecutionRole"
 _WHL_FILENAME = "agi_data_curator-1.0.0-py3-none-any.whl"
+_WHL_SHA256 = "18d631f2a367dc744d34ac3b3e1cd8718a4fe3a859a79d63c29472169e7abba1"
 _TERMINAL_STATES = {"SUCCEEDED", "FAILED", "STOPPED", "TIMEOUT", "ERROR"}
 
 # Glue entry-point script, uploaded to S3 and executed inside the Glue Ray worker.
@@ -271,6 +273,12 @@ class GlueRuntimeManager(RuntimeManager):
         """Upload the bundled agi_data_curator wheel and return its S3 path."""
         whl_ref = resources.files("amzn_nova_forge.dataset.bundled").joinpath(_WHL_FILENAME)
         whl_bytes = whl_ref.read_bytes()
+        actual_sha = hashlib.sha256(whl_bytes).hexdigest()
+        if actual_sha != _WHL_SHA256:
+            raise RuntimeError(
+                f"Integrity check failed for bundled wheel {_WHL_FILENAME}: "
+                f"expected sha256 {_WHL_SHA256}, got {actual_sha}"
+            )
         return self._upload_whl_as_zip(_WHL_FILENAME, whl_bytes)
 
     def _upload_module(self, module_path: str) -> str:

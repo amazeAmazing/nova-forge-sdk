@@ -24,6 +24,10 @@ from typing import Any, Dict, List, Optional
 import yaml
 
 from amzn_nova_forge.core.constants import (
+    DATAMIX_CUSTOMER_DATA_FIELD,
+    DATAMIX_DATASET_CATALOG_FIELD,
+    DATAMIX_NOVA_PREFIX,
+    DATAMIX_PERCENT_SUFFIX,
     EVAL_TASK_METRIC_MAP,
     EVAL_TASK_STRATEGY_MAP,
     HYPERPOD_RECIPE_PATH,
@@ -36,7 +40,8 @@ from amzn_nova_forge.core.enums import (
     Version,
 )
 from amzn_nova_forge.core.runtime import RuntimeManager
-from amzn_nova_forge.core.types import ValidationConfig
+from amzn_nova_forge.core.training_overrides import NULLABLE_OVERRIDE_FIELDS
+from amzn_nova_forge.core.types import ConfigParameter, RecipeConfig, ValidationConfig
 from amzn_nova_forge.monitor import MLflowMonitor
 from amzn_nova_forge.rft_multiturn import RFTMultiturnInfrastructure
 from amzn_nova_forge.util.checkpoint_util import validate_checkpoint_uri
@@ -588,7 +593,10 @@ class RecipeBuilder:
                             overrides_template[recipe_template_key] = {
                                 "default": overrides[recipe_template_key],
                                 "type": type(recipe_template_value).__name__,
-                                "required": True,
+                                "required": not (
+                                    overrides[recipe_template_key] is None
+                                    and recipe_template_key in NULLABLE_OVERRIDE_FIELDS
+                                ),
                             }
                             if existing_enum is not None:
                                 overrides_template[recipe_template_key]["enum"] = existing_enum
@@ -691,13 +699,13 @@ class RecipeBuilder:
             # TODO Investigate some percent params are integer type but default value is float
             # Changing all to float right now
             for key, value in data_mixing_config.items():
-                if key in overrides_template and key != DataMixing.DATASET_CATALOG_FIELD:
-                    if key == DataMixing.CUSTOMER_DATA_FIELD:
+                if key in overrides_template and key != DATAMIX_DATASET_CATALOG_FIELD:
+                    if key == DATAMIX_CUSTOMER_DATA_FIELD:
                         data_mixing_recipe_key = "percent"
                     else:
-                        data_mixing_recipe_key = key.removeprefix(DataMixing.NOVA_PREFIX)
+                        data_mixing_recipe_key = key.removeprefix(DATAMIX_NOVA_PREFIX)
                         data_mixing_recipe_key = data_mixing_recipe_key.removesuffix(
-                            DataMixing.PERCENT_SUFFIX
+                            DATAMIX_PERCENT_SUFFIX
                         )
 
                     overrides_template[data_mixing_recipe_key] = overrides_template[key]
@@ -1007,4 +1015,81 @@ class RecipeBuilder:
             if overrides_template
             else None,
             image_uri,
+        )
+
+    _NON_CONFIG_KEYS = frozenset(
+        {
+            "name",
+            "model_type",
+            "model_name_or_path",
+            "data_s3_path",
+            "output_s3_path",
+            "peft_scheme",
+            "task",
+        }
+    )
+
+    def get_overridable_config(
+        self,
+        overrides: Optional[Dict[str, Any]] = None,
+        input_recipe_path: Optional[str] = None,
+    ) -> RecipeConfig:
+        """Return overridable recipe parameters without validation or file I/O."""
+        recipe_metadata, recipe_template, overrides_template, _image_uri = load_recipe_templates(
+            model=self.model,
+            method=self.method,
+            platform=self.platform,
+            region=self.region,
+            instance_type=self.instance_type,
+            data_mixing_enabled=True if self.data_mixing_instance else False,
+            eval_task=getattr(self, "eval_task", None),
+            image_uri_override=self.image_uri_override,
+            rft_multiturn_infra=self.rft_multiturn_infra,
+            is_multimodal=self.is_multimodal,
+            hub_content_version=self.hub_content_version,
+        )
+
+        if not overrides_template:
+            return RecipeConfig(
+                model=self.model,
+                method=self.method,
+                platform=self.platform,
+                parameters=(),
+            )
+
+        self._resolve_user_inputs(
+            recipe_template=recipe_template,
+            overrides_template=overrides_template,
+            overrides=overrides or {},
+            input_recipe_path=input_recipe_path,
+            allowed_instance_count=recipe_metadata.get("InstanceCount")
+            if recipe_metadata
+            else None,
+            allowed_instance_types=recipe_metadata.get("SupportedInstanceTypes")
+            if recipe_metadata
+            else None,
+        )
+
+        parameters = []
+        for key, meta in overrides_template.items():
+            if key in self._NON_CONFIG_KEYS or not isinstance(meta, dict):
+                continue
+            parameters.append(
+                ConfigParameter(
+                    name=key,
+                    type=meta.get("type", "unknown"),
+                    default=meta.get("default"),
+                    description=meta.get("description"),
+                    min=meta.get("min"),
+                    max=meta.get("max"),
+                    enum=tuple(meta["enum"]) if "enum" in meta else None,
+                    required=meta.get("required", False),
+                )
+            )
+
+        return RecipeConfig(
+            model=self.model,
+            method=self.method,
+            platform=self.platform,
+            parameters=tuple(parameters),
         )

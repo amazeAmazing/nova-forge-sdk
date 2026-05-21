@@ -707,12 +707,27 @@ class TestForgeEvaluatorGetLogs(unittest.TestCase):
         )
 
     @patch("amzn_nova_forge.evaluator.forge_evaluator.CloudWatchLogMonitor")
-    @patch("amzn_nova_forge.evaluator.forge_evaluator.logger")
-    def test_get_logs_missing_params_logs_info(self, mock_logger, mock_monitor_cls):
-        self.evaluator.get_logs()
+    def test_get_logs_missing_params_raises_value_error(self, mock_monitor_cls):
+        with self.assertRaises(ValueError) as ctx:
+            self.evaluator.get_logs()
 
-        mock_logger.info.assert_called_once()
-        self.assertIn("job_result", mock_logger.info.call_args[0][0])
+        self.assertIn("job_result", str(ctx.exception))
+        mock_monitor_cls.assert_not_called()
+
+    @patch("amzn_nova_forge.evaluator.forge_evaluator.CloudWatchLogMonitor")
+    def test_get_logs_job_id_only_raises_value_error(self, mock_monitor_cls):
+        with self.assertRaises(ValueError) as ctx:
+            self.evaluator.get_logs(job_id="some-job")
+
+        self.assertIn("job_result", str(ctx.exception))
+        mock_monitor_cls.assert_not_called()
+
+    @patch("amzn_nova_forge.evaluator.forge_evaluator.CloudWatchLogMonitor")
+    def test_get_logs_started_time_only_raises_value_error(self, mock_monitor_cls):
+        with self.assertRaises(ValueError) as ctx:
+            self.evaluator.get_logs(started_time=datetime(2025, 1, 1, tzinfo=timezone.utc))
+
+        self.assertIn("job_result", str(ctx.exception))
         mock_monitor_cls.assert_not_called()
 
     @patch("amzn_nova_forge.evaluator.forge_evaluator.CloudWatchLogMonitor")

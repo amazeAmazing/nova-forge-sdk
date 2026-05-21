@@ -8,3 +8,4 @@ src/amzn_nova_forge/model/result/eval_result.py
 
 # Safe exec usage in controlled environment for reward verification
 src/amzn_nova_forge/util/reward_verifier.py
+tests/unit/manager/test_smtj_dataprep_runtime_manager.py

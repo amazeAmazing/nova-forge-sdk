@@ -31,6 +31,12 @@ DEFAULT_JOB_CACHE_DIR = "~/.nova-forge/cache"
 DEFAULT_BATCH_TRACE_CACHE_DIR = "~/.nova-forge/batch_trace_cache"
 BATCH_TRACE_LOG_SUBDIR = "batch_tracing"
 
+# Data mixing field name patterns
+DATAMIX_NOVA_PREFIX = "nova_"
+DATAMIX_PERCENT_SUFFIX = "_percent"
+DATAMIX_CUSTOMER_DATA_FIELD = "customer_data_percent"
+DATAMIX_DATASET_CATALOG_FIELD = "dataset_catalog"
+
 REGION_TO_ESCROW_ACCOUNT_MAPPING = {
     "us-east-1": "708977205387",
     "us-west-2": "176779409107",

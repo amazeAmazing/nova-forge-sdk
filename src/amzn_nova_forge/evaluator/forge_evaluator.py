@@ -346,13 +346,19 @@ class ForgeEvaluator:
         start_from_head: bool = False,
         end_time: Optional[int] = None,
     ) -> None:
-        """Stream CloudWatch logs for an evaluation job."""
+        """Stream CloudWatch logs for an evaluation job.
+
+        Raises:
+            ValueError: If neither ``job_result`` nor both ``job_id`` and
+                ``started_time`` are provided.
+        """
         resolved_job_id = job_result.job_id if job_result else job_id
         resolved_started = job_result.started_time if job_result else started_time
 
         if not resolved_job_id or not resolved_started:
-            logger.info("Provide either a job_result or explicit job_id and started_time.")
-            return
+            raise ValueError(
+                "No job reference provided. Pass either a job_result or explicit job_id and started_time."
+            )
 
         kwargs: Dict[str, Any] = {}
         if self._platform == Platform.SMHP:

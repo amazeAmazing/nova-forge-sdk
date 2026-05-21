@@ -798,5 +798,55 @@ class TestSmtjEntryScriptSummaryJson(unittest.TestCase):
         mock_s3.put_object.assert_called_once()
 
 
+class TestSmtjEntryScriptWheelSafety(unittest.TestCase):
+    """SMTJ entry script rejects wheels with unsafe paths."""
+
+    def _exec_install_deps_with_whl(self, whl_names):
+        """Run _install_deps() from the embedded entry script against a wheel
+        containing ``whl_names`` as members. Returns (deps_dir, target_dir)."""
+        import zipfile
+
+        deps_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, deps_dir)
+        target_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, target_dir)
+
+        whl_path = os.path.join(deps_dir, "test.whl")
+        with zipfile.ZipFile(whl_path, "w") as zf:
+            for name in whl_names:
+                zf.writestr(name, b"payload")
+
+        # Redirect the hardcoded deps path and site-packages to temp dirs.
+        script_src = SMTJDataPrepRuntimeManager._SMTJ_ENTRY_SCRIPT
+        patched = script_src.replace('"/opt/ml/input/data/deps"', repr(deps_dir))
+
+        # __name__ != "__main__" so exec() only defines functions.
+        script_globals = {"__name__": "__not_main__"}
+        with patch("site.getsitepackages", return_value=[target_dir]):
+            exec(compile(patched, "<smtj_entry>", "exec"), script_globals)
+            script_globals["_install_deps"](None)
+
+        return deps_dir, target_dir
+
+    def test_rejects_path_traversal(self):
+        """Wheel containing '../escaped.txt' raises before extraction."""
+        with self.assertRaises(RuntimeError) as ctx:
+            self._exec_install_deps_with_whl(["../escaped.txt"])
+        self.assertIn("Unsafe path traversal", str(ctx.exception))
+
+    def test_rejects_absolute_path(self):
+        """Wheel containing an absolute path raises before extraction."""
+        with self.assertRaises(RuntimeError) as ctx:
+            self._exec_install_deps_with_whl(["/etc/passwd"])
+        self.assertIn("Unsafe absolute path", str(ctx.exception))
+
+    def test_accepts_normal_wheel_contents(self):
+        """Wheel with ordinary relative paths extracts without error."""
+        _, target_dir = self._exec_install_deps_with_whl(
+            ["foo/__init__.py", "foo.dist-info/METADATA"]
+        )
+        self.assertTrue(os.path.exists(os.path.join(target_dir, "foo", "__init__.py")))
+
+
 if __name__ == "__main__":
     unittest.main()

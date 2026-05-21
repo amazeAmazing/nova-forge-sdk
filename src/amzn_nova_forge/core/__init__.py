@@ -52,12 +52,14 @@ from amzn_nova_forge.core.job_cache import (
 )
 from amzn_nova_forge.core.runtime import RuntimeManager
 from amzn_nova_forge.core.types import (
+    ConfigParameter,
     DeploymentResult,
     EndpointInfo,
     ForgeConfig,
     JobConfig,
     ModelArtifacts,
     ModelConfigDict,
+    RecipeConfig,
     validate_region,
 )
 
@@ -94,12 +96,14 @@ __all__ = [
     # runtime
     "RuntimeManager",
     # types
+    "ConfigParameter",
     "DeploymentResult",
     "EndpointInfo",
     "ForgeConfig",
     "JobConfig",
     "ModelArtifacts",
     "ModelConfigDict",
+    "RecipeConfig",
     # result classes (lazy-loaded)
     "BaseJobResult",
     "BedrockStatusManager",

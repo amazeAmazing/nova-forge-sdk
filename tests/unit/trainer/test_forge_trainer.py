@@ -685,13 +685,33 @@ class TestForgeTrainerGetLogs(unittest.TestCase):
         )
 
     @patch("amzn_nova_forge.trainer.forge_trainer.CloudWatchLogMonitor")
-    def test_get_logs_missing_info_returns_early(self, MockMonitor):
+    def test_get_logs_missing_info_raises_value_error(self, MockMonitor):
         trainer = self._make_trainer()
 
-        with patch("amzn_nova_forge.trainer.forge_trainer.logger") as mock_logger:
+        with self.assertRaises(ValueError) as ctx:
             trainer.get_logs()
-            mock_logger.info.assert_called_once()
 
+        self.assertIn("job_result", str(ctx.exception))
+        MockMonitor.assert_not_called()
+
+    @patch("amzn_nova_forge.trainer.forge_trainer.CloudWatchLogMonitor")
+    def test_get_logs_job_id_only_raises_value_error(self, MockMonitor):
+        trainer = self._make_trainer()
+
+        with self.assertRaises(ValueError) as ctx:
+            trainer.get_logs(job_id="some-job")
+
+        self.assertIn("job_result", str(ctx.exception))
+        MockMonitor.assert_not_called()
+
+    @patch("amzn_nova_forge.trainer.forge_trainer.CloudWatchLogMonitor")
+    def test_get_logs_started_time_only_raises_value_error(self, MockMonitor):
+        trainer = self._make_trainer()
+
+        with self.assertRaises(ValueError) as ctx:
+            trainer.get_logs(started_time=datetime(2025, 1, 1, tzinfo=timezone.utc))
+
+        self.assertIn("job_result", str(ctx.exception))
         MockMonitor.assert_not_called()
 
     @patch("amzn_nova_forge.trainer.forge_trainer.CloudWatchLogMonitor")
@@ -1128,6 +1148,105 @@ class TestForgeTrainerValCheckInterval(unittest.TestCase):
         call_args = infra.execute.call_args
         job_config = call_args.kwargs["job_config"]
         self.assertIsNone(job_config.trainer_config_hyperparameters)
+
+
+class TestForgeTrainerGetConfig(unittest.TestCase):
+    """Tests for ForgeTrainer.get_config()."""
+
+    @patch(
+        "amzn_nova_forge.trainer.forge_trainer.set_output_s3_path",
+        return_value=FIXED_OUTPUT_PATH,
+    )
+    @patch("boto3.session.Session")
+    def _make_trainer(self, mock_session, mock_set_output, **kwargs):
+        type(mock_session.return_value).region_name = PropertyMock(return_value="us-east-1")
+        defaults = dict(
+            model=Model.NOVA_MICRO,
+            method=TrainingMethod.SFT_LORA,
+            infra=_make_smtj_infra(),
+            training_data_s3_path="s3://bucket/data",
+        )
+        defaults.update(kwargs)
+        return ForgeTrainer(**defaults)
+
+    @patch("amzn_nova_forge.trainer.forge_trainer.RecipeBuilder")
+    def test_returns_recipe_config(self, mock_rb_cls):
+        from amzn_nova_forge.core.types import ConfigParameter, RecipeConfig
+
+        expected = RecipeConfig(
+            model=Model.NOVA_MICRO,
+            method=TrainingMethod.SFT_LORA,
+            platform=Platform.SMTJ,
+            parameters=(ConfigParameter(name="lr", type="float", default=5e-6),),
+        )
+        mock_rb_cls.return_value.get_overridable_config.return_value = expected
+
+        trainer = self._make_trainer()
+        result = trainer.get_config()
+
+        self.assertEqual(result, expected)
+        mock_rb_cls.return_value.get_overridable_config.assert_called_once_with(overrides=None)
+
+    @patch("amzn_nova_forge.trainer.forge_trainer.RecipeBuilder")
+    def test_passes_overrides_through(self, mock_rb_cls):
+        from amzn_nova_forge.core.types import RecipeConfig
+
+        mock_rb_cls.return_value.get_overridable_config.return_value = RecipeConfig(
+            model=Model.NOVA_MICRO,
+            method=TrainingMethod.SFT_LORA,
+            platform=Platform.SMTJ,
+            parameters=(),
+        )
+
+        trainer = self._make_trainer()
+        overrides = {"lr": 1e-5, "max_epochs": 3}
+        trainer.get_config(overrides=overrides)
+
+        mock_rb_cls.return_value.get_overridable_config.assert_called_once_with(overrides=overrides)
+
+    @patch("amzn_nova_forge.trainer.forge_trainer.RecipeBuilder")
+    def test_does_not_start_job(self, mock_rb_cls):
+        from amzn_nova_forge.core.types import RecipeConfig
+
+        mock_rb_cls.return_value.get_overridable_config.return_value = RecipeConfig(
+            model=Model.NOVA_MICRO,
+            method=TrainingMethod.SFT_LORA,
+            platform=Platform.SMTJ,
+            parameters=(),
+        )
+
+        trainer = self._make_trainer()
+        trainer.get_config()
+
+        trainer.infra.execute.assert_not_called()
+
+    @patch("amzn_nova_forge.trainer.forge_trainer.RecipeBuilder")
+    def test_creates_recipe_builder_with_trainer_state(self, mock_rb_cls):
+        from amzn_nova_forge.core.types import RecipeConfig
+
+        mock_rb_cls.return_value.get_overridable_config.return_value = RecipeConfig(
+            model=Model.NOVA_MICRO,
+            method=TrainingMethod.SFT_LORA,
+            platform=Platform.SMTJ,
+            parameters=(),
+        )
+
+        trainer = self._make_trainer()
+        trainer.get_config()
+
+        call_kwargs = mock_rb_cls.call_args.kwargs
+        self.assertEqual(call_kwargs["model"], Model.NOVA_MICRO)
+        self.assertEqual(call_kwargs["method"], TrainingMethod.SFT_LORA)
+        self.assertEqual(call_kwargs["platform"], Platform.SMTJ)
+        self.assertEqual(call_kwargs["job_name"], "__config_preview__")
+
+    def test_get_config_rft_multiturn_raises(self):
+        trainer = self._make_trainer(
+            model=Model.NOVA_LITE_2, method=TrainingMethod.RFT_MULTITURN_LORA
+        )
+        with self.assertRaises(ValueError) as ctx:
+            trainer.get_config()
+        self.assertIn("rft_multiturn_infra", str(ctx.exception))
 
 
 if __name__ == "__main__":

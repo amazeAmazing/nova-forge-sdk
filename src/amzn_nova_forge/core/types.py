@@ -27,7 +27,7 @@ from amzn_nova_forge.core.constants import (
     DEFAULT_JOB_CACHE_DIR,
     REGION_TO_ESCROW_ACCOUNT_MAPPING,
 )
-from amzn_nova_forge.core.enums import DeployPlatform, Platform, TrainingMethod
+from amzn_nova_forge.core.enums import DeployPlatform, Model, Platform, TrainingMethod
 
 if TYPE_CHECKING:
     from amzn_nova_forge.core.job_cache import JobCachingConfig
@@ -157,3 +157,47 @@ class JobConfig:
     method: Optional[TrainingMethod] = None  # Training method (required for Bedrock)
     data_mixing_config: Optional[Dict[str, Any]] = None  # Datamix percent fields (SMTJServerless)
     # TODO: The mlflow config is populated in recipe for both SMTJ and SMHP but will only work for SMHP as SMTJ support for mlflow is only through boto3, fix this with sagemaker 3 update
+
+
+@dataclass(frozen=True)
+class ConfigParameter:
+    """A single overridable parameter in a training recipe."""
+
+    name: str
+    type: str
+    default: Any
+    description: Optional[str] = None
+    min: Optional[float] = None
+    max: Optional[float] = None
+    enum: Optional[tuple] = None
+    required: bool = False
+
+
+@dataclass(frozen=True)
+class RecipeConfig:
+    """Frozen snapshot of the overridable configuration for a training recipe."""
+
+    model: Model
+    method: TrainingMethod
+    platform: Platform
+    parameters: tuple[ConfigParameter, ...]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {p.name: p.default for p in self.parameters}
+
+    def __repr__(self) -> str:
+        lines = [
+            f"RecipeConfig(model={self.model.name}, method={self.method.name}, platform={self.platform.name})"
+        ]
+        for p in self.parameters:
+            constraint = ""
+            if p.min is not None and p.max is not None:
+                constraint = f" [{p.min}..{p.max}]"
+            elif p.min is not None:
+                constraint = f" [>={p.min}]"
+            elif p.max is not None:
+                constraint = f" [<={p.max}]"
+            if p.enum is not None:
+                constraint = f" enum={list(p.enum)}"
+            lines.append(f"  {p.name}: {p.type} = {p.default}{constraint}")
+        return "\n".join(lines)

@@ -813,11 +813,12 @@ class TestGetLogs(unittest.TestCase):
             region="us-east-1",
         )
 
-    @patch(f"{PATCH_PREFIX}.logger")
-    def test_get_logs_no_arn_logs_info(self, mock_logger, mock_validate_region):
+    def test_get_logs_no_arn_raises_value_error(self, mock_validate_region):
         deployer = self._make_deployer()
-        deployer.get_logs()
-        mock_logger.info.assert_called_once_with("No endpoint ARN available. Call deploy() first.")
+        with self.assertRaises(ValueError) as ctx:
+            deployer.get_logs()
+
+        self.assertIn("endpoint_arn", str(ctx.exception))
 
 
 class TestDeploymentResultRegion(unittest.TestCase):

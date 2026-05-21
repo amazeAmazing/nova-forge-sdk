@@ -20,6 +20,9 @@ import boto3
 
 from amzn_nova_forge.core.constants import (
     BYOD_AVAILABLE_EVAL_TASKS,
+    DATAMIX_CUSTOMER_DATA_FIELD,
+    DATAMIX_NOVA_PREFIX,
+    DATAMIX_PERCENT_SUFFIX,
     EVAL_TASK_STRATEGY_MAP,
     get_available_subtasks,
 )
@@ -754,71 +757,52 @@ class Validator:
             errors.append(f"Failed to validate cluster infrastructure: {str(e)}")
 
     @staticmethod
-    def validate_data_mixing_config(
-        config: dict,
-        nova_prefix: str,
-        percent_suffix: str,
-        customer_data_field: str,
-        dataset_catalog_fields: str,
-        expected_nova_fields: set,
-    ) -> None:
-        """
-        Validate the data mixing configuration. The validation rules are as follows:
-        - The datamix config should have valid fields.
-        - Customer data can be between 0-100.
-        - If customer data is 100, then no nova data is used
-        - If customer data < 100, then sum of nova data percent fields should be 100.
+    def validate_data_mixing_config(config: Dict[str, Any]) -> None:
+        """Validate a data mixing config dict.
+
+        Checks:
+        - Each percent field is 0-100 and numeric.
+        - When ``customer_data_percent`` is 100, all nova data should sum to 0.
+        - When ``customer_data_percent`` < 100, nova data percentages must sum to 100.
 
         Raises:
-            ValueError: If configuration is invalid
+            ValueError: If configuration is invalid.
         """
-
-        nova_fields = {}
-        customer_percent = 0
-        total = 0
-
-        if expected_nova_fields:
-            for key in config.keys():
-                # Skip customer_data_percent
-                if key == dataset_catalog_fields:
-                    continue
-                # Check if key is a nova field that's not in the known defaults
-                if key not in expected_nova_fields:
-                    raise ValueError(
-                        f"Invalid nova field '{key}'. Valid fields are: {sorted(expected_nova_fields)}"
-                    )
+        range_errors: List[str] = []
+        nova_fields: Dict[str, Any] = {}
+        customer_percent = config.get(DATAMIX_CUSTOMER_DATA_FIELD)
 
         for key, value in config.items():
-            if key == customer_data_field:
-                customer_percent = value
-                if value is not None and not 0 <= value <= 100:
-                    raise ValueError(
-                        f"{customer_data_field} must be between 0 and 100, got {value}"
-                    )
-            elif key.startswith(nova_prefix) and key.endswith(percent_suffix):
-                nova_fields[key] = value
-                # Each nova field must be between 0 and 100
-                if value is not None and not 0 <= value <= 100:
-                    raise ValueError(f"{key} must be between 0 and 100, got {value}")
-
-        if nova_fields:
-            non_none_values = [v for v in nova_fields.values() if v is not None]
-            if non_none_values:
-                total = sum(non_none_values)
-                if abs(total - 100.0) > 0.01:  # Allow small floating point errors
-                    raise ValueError(
-                        f"Nova data percentages must sum to 100, got {total}. Fields: {nova_fields}"
-                    )
-
-        if customer_percent == 100 and total > 0:
-            raise ValueError(
-                f"Since {customer_data_field} is 100 %, all nova data should sum to 0 %"
+            is_percent_field = key == DATAMIX_CUSTOMER_DATA_FIELD or (
+                key.startswith(DATAMIX_NOVA_PREFIX) and key.endswith(DATAMIX_PERCENT_SUFFIX)
             )
+            if not is_percent_field:
+                continue
 
-        if customer_percent < 100 and total == 0:
+            if value is not None and not isinstance(value, (int, float)):
+                range_errors.append(
+                    f"{key} must be a number, got {type(value).__name__}: {value!r}"
+                )
+            elif value is not None and not 0 <= value <= 100:
+                range_errors.append(f"{key} must be between 0 and 100, got {value}")
+
+            if key != DATAMIX_CUSTOMER_DATA_FIELD:
+                nova_fields[key] = value
+
+        if range_errors:
+            raise ValueError("; ".join(range_errors))
+
+        nova_values = [v for v in nova_fields.values() if v is not None]
+        total = sum(nova_values) if nova_values else 0
+
+        if customer_percent == 100:
+            if total > 0:
+                raise ValueError(
+                    f"Since {DATAMIX_CUSTOMER_DATA_FIELD} is 100 %, all nova data should sum to 0 %"
+                )
+        elif nova_values and abs(total - 100.0) > 0.01:
             raise ValueError(
-                f"Since {customer_data_field} is less than 100 % {customer_percent}%, all nova data cannot be 0"
-                f"Fields: {nova_fields} should sum to 100 %"
+                f"Nova data percentages must sum to 100, got {total}. Fields: {nova_fields}"
             )
 
     @staticmethod
@@ -1040,7 +1024,7 @@ class Validator:
                     continue
 
             # Validate proper types are used
-            if "type" in override_metadata:
+            if "type" in override_metadata and key != "temperature":
                 # None is allowed for optional fields (recipe key exists but has no value set)
                 if recipe_value is None and not override_metadata.get("required", False):
                     continue
@@ -1055,6 +1039,15 @@ class Validator:
                         f"'{key}' expects {override_metadata['type']}. You provided {type(recipe_value).__name__}."
                     )
                     continue  # If wrong type is used, continue to next key to prevent type exceptions
+
+            # Special validation for temperature: accepts both int and float
+            if key == "temperature":
+                if not isinstance(recipe_value, (int, float)):
+                    errors.append(
+                        f"'temperature' expects int or float. You provided {type(recipe_value).__name__}."
+                    )
+                    continue
+
             # Validate enum constraints are met
             if "enum" in override_metadata:
                 if recipe_value not in override_metadata["enum"] and recipe_value != "":
