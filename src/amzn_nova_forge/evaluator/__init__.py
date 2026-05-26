@@ -12,5 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from amzn_nova_forge.evaluator.forge_evaluator import EvalTaskConfig, ForgeEvaluator
+from amzn_nova_forge.evaluator.inspect_lens_config import InspectLensConfig
 
-__all__ = ["ForgeEvaluator", "EvalTaskConfig"]
+__all__ = ["ForgeEvaluator", "EvalTaskConfig", "InspectLensConfig"]

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Callable, ClassVar, Dict, Optional, TypedDict
+from typing import TYPE_CHECKING, Any, Callable, ClassVar, Dict, List, Optional, TypedDict
 
 from pydantic import BaseModel
 
@@ -156,6 +156,7 @@ class JobConfig:
     mlflow_run_name: Optional[str] = None
     method: Optional[TrainingMethod] = None  # Training method (required for Bedrock)
     data_mixing_config: Optional[Dict[str, Any]] = None  # Datamix percent fields (SMTJServerless)
+    environment: Optional[Dict[str, str]] = None  # Environment variables for the training container
     # TODO: The mlflow config is populated in recipe for both SMTJ and SMHP but will only work for SMHP as SMTJ support for mlflow is only through boto3, fix this with sagemaker 3 update
 
 

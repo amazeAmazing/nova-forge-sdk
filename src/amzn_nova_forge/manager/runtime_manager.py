@@ -21,6 +21,7 @@ import subprocess
 import textwrap
 import time
 import zipfile
+from urllib.parse import urlparse
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -710,6 +711,10 @@ class SMTJRuntimeManager(RuntimeManager):
                 "sagemaker_session": self.sagemaker_session,
                 "training_image": job_config.image_uri,
             }
+            if job_config.environment:
+                # Pass arbitrary environment variables to the training container
+                # (used by InspectLens to inject HF_TOKEN, timeouts, etc.)
+                trainer_config["environment"] = job_config.environment
             # For eval job, the input could be none
             # https://docs.aws.amazon.com/sagemaker/latest/dg/nova-model-evaluation.html#nova-model-evaluation-notebook
             if job_config.data_s3_path:
@@ -1372,6 +1377,10 @@ class SMTJDataPrepRuntimeManager(RuntimeManager):
         vpc_config = self._build_vpc_config()
         if vpc_config:
             create_params["VpcConfig"] = vpc_config
+            if not self._is_standard_ecr_image(self.image_uri):
+                create_params["AlgorithmSpecification"]["TrainingImageConfig"] = {
+                    "TrainingRepositoryAccessMode": "Vpc",
+                }
 
         return create_params
 
@@ -1383,6 +1392,22 @@ class SMTJDataPrepRuntimeManager(RuntimeManager):
         if self.security_group_ids:
             vpc_config["SecurityGroupIds"] = self.security_group_ids
         return vpc_config
+
+    @staticmethod
+    def _is_standard_ecr_image(image_uri: str) -> bool:
+        """Return True if the image is a standard private ECR image (account.dkr.ecr.region.amazonaws.com/...)."""
+        parsed = urlparse(image_uri)
+        host = parsed.hostname
+        if not host:
+            host = parsed.path.split("/", 1)[0]
+        if not host:
+            return False
+        return bool(
+            re.fullmatch(
+                r"\d{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com(?:\.cn)?",
+                host,
+            )
+        )
 
     def _raise_if_not_completed(self, job_name: str, status: str) -> None:
         """Raise ``RuntimeError`` with the FailureReason if the job didn't succeed."""

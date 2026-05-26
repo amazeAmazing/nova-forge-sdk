@@ -11,6 +11,7 @@
 - [Enums and Configuration](enums.md) — Platform, Model, TrainingMethod, etc.
 - [RFT Multiturn](rft-multiturn.md) — Multi-turn RFT infrastructure
 - [Notifications](notifications.md) — Job notifications and error handling
+- [InspectLens Evaluation Guide](../user-guides/inspect_eval.md) — Prerequisites, benchmark authoring, inference modes, MLflow tracking
 
 ---
 
@@ -23,10 +24,13 @@
 6. **Use descriptive job names** to help track and organize your experiments
 7. **Save results incrementally** during long-running jobs
 8. **Test with small datasets** before scaling up to full training
+
 ---
+
 ## Additional Resources
 - AWS Documentation: [Amazon Bedrock](https://docs.aws.amazon.com/bedrock/)
 - AWS Documentation: [Amazon SageMaker](https://docs.aws.amazon.com/sagemaker/)
 - SDK GitHub Repository: Check for updates and examples
 - Support: Use AWS Support for technical assistance
+
 ---

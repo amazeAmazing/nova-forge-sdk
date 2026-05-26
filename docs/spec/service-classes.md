@@ -28,7 +28,7 @@ class ForgeConfig:
 - `output_s3_path` (Optional[str]): S3 path for output artifacts. Auto-generated if not provided
 - `generated_recipe_dir` (Optional[str]): Local path to save generated recipe files
 - `validation_config` (Optional[ValidationConfig]): Controls pre-flight validation. Fields: `iam` (bool), `infra` (bool), `recipe` (bool) — all default to True
-- `image_uri` (Optional[str]): Custom container image URI override
+- `image_uri` (Optional[str]): Custom container image URI override. For InspectLens, overrides the default orchestrator container image.
 - `mlflow_monitor` (Optional[MLflowMonitor]): MLflow monitoring configuration (SageMaker only)
 - `enable_job_caching` (bool): Enable caching of completed job results for reuse. Default: False
 - `job_cache_dir` (str): Directory for cached job results. Default: `~/.nova-forge/cache`
@@ -427,6 +427,131 @@ def get_logs(
 ```python
 evaluator.get_logs(job_result=eval_result, limit=50)
 ```
+---
+
+##### InspectLens Evaluation (`EvaluationTask.INSPECT_LENS`)
+
+InspectLens runs [Inspect AI](https://inspect.ai-safety-institute.org.uk/) benchmarks as a SageMaker Training Job. The job acts as a CPU-only orchestrator — inference is delegated to a Bedrock endpoint or a SageMaker endpoint. No GPU is needed for the orchestrator instance.
+
+Pass `eval_task=EvaluationTask.INSPECT_LENS` and provide an `InspectLensConfig` via the `inspect_lens_config` parameter.
+
+**`InspectLensConfig`**
+
+```python
+@dataclass
+class InspectLensConfig:
+    benchmarks_path: Optional[str] = None
+    tasks: List[Dict[str, Any]] = field(default_factory=list)
+    output_s3_path: Optional[str] = None
+    output_format: Optional[str] = None
+    bedrock_model_id: Optional[str] = None
+    endpoint_name: Optional[str] = None
+    model_s3_uri: Optional[str] = None
+    inference_image_uri: Optional[str] = None
+    endpoint_instance_type: Optional[str] = None
+    endpoint_instance_count: int = 1
+    endpoint_execution_role_arn: Optional[str] = None
+    context_length: Optional[str] = None
+    max_concurrency: Optional[str] = None
+    enable_rai: bool = True
+    cleanup_endpoint: bool = True
+    endpoint_prefix: str = "inspectlens"
+    endpoint_environment: Optional[Dict[str, str]] = None
+    extra_args: Optional[List[str]] = None
+    environment: Optional[Dict[str, str]] = None
+```
+
+**Parameters:**
+- `benchmarks_path` (str): S3 URI to benchmark `.py` files — required at runtime. Use `evaluator.upload_benchmarks(local_dir, s3_path)` to upload a local directory first. Validated: must be a non-empty `s3://` URI; task names are checked against `@task`-decorated functions at job submission time.
+- `tasks` (List[Dict]): List of task dicts with a required `"name"` key and optional `"limit"` and `"epochs"`. Leave empty to run all `@task` functions in `benchmarks_path`. Validated: each entry must be a dict with a `"name"` key.
+- `output_s3_path` (Optional[str]): S3 prefix for eval result JSON logs. Defaults to the `ForgeEvaluator` output path. Validated: must be an `s3://` URI if provided.
+- `output_format` (Optional[str]): Output format for eval results. One of `"eval"`, `"csv"`, `"jsonl"`, `"json"`. Defaults to `"eval"`.
+- `bedrock_model_id` (Optional[str]): Bedrock model ID or ARN. Falls back to the `ForgeEvaluator.model` cross-region inference profile.
+- `endpoint_name` (Optional[str]): Existing SageMaker endpoint name. Mutually exclusive with `model_s3_uri`.
+- `model_s3_uri` (Optional[str]): S3 URI of model artifacts for creating a new endpoint. Requires `inference_image_uri`. Validated: must be an `s3://` URI if provided.
+- `inference_image_uri` (Optional[str]): ECR image URI for the new endpoint container. Requires `model_s3_uri`. Validated: must match ECR URI format if provided.
+- `endpoint_instance_type` (Optional[str]): Instance type for the new endpoint.
+- `endpoint_instance_count` (int): Number of instances for the new endpoint. Default: 1.
+- `endpoint_execution_role_arn` (Optional[str]): IAM role ARN for the new endpoint. Validated: must match IAM ARN format if provided.
+- `context_length` (Optional[str]): Context length for the new endpoint.
+- `max_concurrency` (Optional[str]): Max concurrency for the new endpoint.
+- `enable_rai` (bool): Enable RAI guardrails on the endpoint. Default: True.
+- `cleanup_endpoint` (bool): Delete the endpoint after evaluation. Default: True.
+- `endpoint_prefix` (str): Prefix for auto-created endpoint names. Default: `"inspectlens"`.
+- `endpoint_environment` (Optional[Dict[str, str]]): Extra environment variables for the inference endpoint container. Example: `{"HF_TOKEN": "hf_xxx"}`.
+- `extra_args` (Optional[List[str]]): Additional CLI args forwarded to `inspect eval`.
+- `environment` (Optional[Dict[str, str]]): Arbitrary environment variables passed to the SageMaker Training Job container. Example: `{"HF_TOKEN": "hf_xxx"}`.
+
+**Inference provider modes:**
+
+| Mode                | When used                                                                                                 |
+|---------------------|-----------------------------------------------------------------------------------------------------------|
+| Bedrock             | No `endpoint_name` or `model_s3_uri` set. Uses `bedrock_model_id` or the evaluator's model enum.         |
+| Existing endpoint   | `endpoint_name` is set.                                                                                   |
+| Create new endpoint | `model_s3_uri` + `inference_image_uri` are set. Endpoint is created, evaluated, then optionally deleted. |
+
+**Decoding overrides:** (`temperature`, `top_p`, `max_tokens`, `max_connections`, `max_retries`, `timeout`) are passed via the `overrides` parameter on `evaluate()`.
+
+**MLflow tracking:** Pass an `MLflowMonitor` via `ForgeConfig.mlflow_monitor`. The SDK automatically injects the tracking section into the InspectLens YAML config.
+
+**Example:**
+
+```python
+from amzn_nova_forge.evaluator import ForgeEvaluator, InspectLensConfig
+from amzn_nova_forge.core.enums import EvaluationTask, Model
+from amzn_nova_forge.core.types import ForgeConfig
+from amzn_nova_forge.manager import SMTJRuntimeManager
+
+infra = SMTJRuntimeManager(
+    instance_type="ml.m5.large",   # CPU only — no GPU needed
+    instance_count=1,
+    execution_role="arn:aws:iam::123456789012:role/InspectLensEvalRole",
+)
+evaluator = ForgeEvaluator(
+    model=Model.NOVA_LITE_2,
+    infra=infra,
+    config=ForgeConfig(output_s3_path="s3://my-bucket/inspectlens/"),
+)
+
+# Upload local benchmarks first
+benchmarks_s3_uri = evaluator.upload_benchmarks(
+    "./my_benchmarks/",
+    "s3://my-bucket/inspectlens/benchmarks/my_benchmarks/",
+)
+
+# Run evaluation
+eval_result = evaluator.evaluate(
+    job_name="inspectlens-eval",
+    eval_task=EvaluationTask.INSPECT_LENS,
+    inspect_lens_config=InspectLensConfig(
+        benchmarks_path=benchmarks_s3_uri,
+        tasks=[{"name": "boolq_pt", "limit": 100}],
+    ),
+    overrides={"temperature": 0.0, "max_tokens": 4096},
+)
+```
+
+See `samples/inspectlens_quickstart.ipynb` for a full walkthrough including all three inference modes (Bedrock, existing endpoint, new endpoint).
+
+For a conceptual guide covering prerequisites, IAM setup, benchmark file format, inference modes, MLflow tracking, and job caching, see [docs/user-guides/inspect_eval.md](../user-guides/inspect_eval.md).
+
+---
+
+##### `upload_benchmarks()`
+Uploads a local benchmarks directory to S3 before starting an InspectLens job.
+
+**Signature:**
+```python
+def upload_benchmarks(self, local_dir: str, s3_path: str) -> str
+```
+
+**Parameters:**
+- `local_dir` (str): Path to the local directory containing benchmark `.py` files with `@task` decorators.
+- `s3_path` (str): S3 URI (`s3://bucket/prefix/`) where the benchmark files will be uploaded.
+
+**Returns:**
+- The S3 URI where benchmarks were uploaded (normalized with a trailing slash).
+
 ---
 
 ### ForgeDeployer

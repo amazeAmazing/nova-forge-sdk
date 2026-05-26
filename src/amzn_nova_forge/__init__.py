@@ -50,7 +50,7 @@ from .dataset.operations.filter_operation import FilterMethod
 from .dataset.operations.transform_operation import TransformMethod
 from .dataset.operations.validate_operation import ValidateMethod
 from .deployer import ForgeDeployer
-from .evaluator import EvalTaskConfig, ForgeEvaluator
+from .evaluator import EvalTaskConfig, ForgeEvaluator, InspectLensConfig
 from .inference import ForgeInference
 from .manager import (
     BedrockRuntimeManager,
