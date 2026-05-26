@@ -515,6 +515,38 @@ class TestSMTJRuntimeManager(unittest.TestCase):
         finally:
             os.unlink(src)
 
+    @patch("amzn_nova_forge.manager.runtime_manager.boto3.client")
+    @patch("amzn_nova_forge.manager.runtime_manager.ModelTrainer")
+    @patch.object(SMTJRuntimeManager, "setup", return_value=None)
+    def test_execute_passes_environment_to_trainer(
+        self, mock_setup, mock_model_trainer_cls, mock_boto_client
+    ):
+        """When job_config.environment is set, it must be passed to ModelTrainer.from_recipe."""
+        manager = self._create_manager()
+
+        mock_model_trainer = MagicMock()
+        mock_model_trainer.with_tensorboard_output_config.return_value = mock_model_trainer
+        mock_model_trainer_cls.from_recipe.return_value = mock_model_trainer
+        manager.sagemaker_client.list_training_jobs.return_value = {
+            "TrainingJobSummaries": [{"TrainingJobName": "test-job-env"}]
+        }
+
+        env = {"HF_TOKEN": "hf_xxx", "HF_HUB_DOWNLOAD_TIMEOUT": "300"}
+        job_config = JobConfig(
+            job_name="test-job",
+            image_uri="123456789012.dkr.ecr.us-east-1.amazonaws.com/my-image:latest",
+            recipe_path="/path/to/recipe",
+            output_s3_path="s3://output-bucket/output",
+            data_s3_path="s3://input-bucket/data",
+            input_s3_data_type="S3Prefix",
+            environment=env,
+        )
+
+        manager.execute(job_config)
+
+        call_kwargs = mock_model_trainer_cls.from_recipe.call_args.kwargs
+        self.assertEqual(call_kwargs["environment"], env)
+
 
 class TestSMTJValidationDataset(unittest.TestCase):
     """Tests for SFT validation dataset support in SMTJRuntimeManager."""

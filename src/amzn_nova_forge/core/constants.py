@@ -294,6 +294,13 @@ _BEDROCK_STATUS_MAP = {
 
 ESCROW_URI_TAG_KEY = "sagemaker.amazonaws.com/forge/escrow-uri"
 
+INSPECT_LENS_DEFAULT_IMAGE_REPO = "763104351884.dkr.ecr.{region}.amazonaws.com/sagemaker-inspect-ai"
+
+
+def get_inspect_lens_default_image_uri(region: str) -> str:
+    """Return the default InspectLens image URI for the given region."""
+    return INSPECT_LENS_DEFAULT_IMAGE_REPO.format(region=region)
+
 
 def _escrow_tag_value(escrow_uri: str) -> str:
     """Normalize escrow URI for use as a tag value (max 256 chars)."""

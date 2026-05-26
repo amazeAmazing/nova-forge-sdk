@@ -81,6 +81,16 @@ class Model(Enum):
                 return model
         raise ValueError(f"Unknown model name: {model_name}")
 
+    @property
+    def bedrock_model_id(self) -> str:
+        """Return the Bedrock cross-region inference profile ID.
+
+        Strips the context-length suffix from model_type and prepends 'us.'
+        e.g. 'amazon.nova-micro-v1:0:128k' -> 'us.amazon.nova-micro-v1:0'
+        """
+        base = self.model_type.rsplit(":", 1)[0]  # strip ':128k', ':300k', ':256k'
+        return f"us.{base}"
+
     NOVA_MICRO = (
         "nova_micro",
         Version.ONE,
@@ -179,6 +189,7 @@ class EvaluationTask(enum.Enum):
     RUBRIC_LLM_JUDGE = "rubric_llm_judge"
     RFT_EVAL = "rft_eval"
     RFT_MULTITURN_EVAL = "rft_multiturn_eval"  # Maps to "rft_eval" in recipes
+    INSPECT_LENS = "inspect_lens"  # InspectLens job-based evaluation via SageMaker Training Job
 
     def get_recipe_value(self) -> str:
         """Get the value to use in recipe templates."""

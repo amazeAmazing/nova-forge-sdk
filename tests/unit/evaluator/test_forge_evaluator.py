@@ -763,5 +763,516 @@ class TestForgeEvaluatorGetLogs(unittest.TestCase):
         )
 
 
+class TestForgeEvaluatorInspectLens(unittest.TestCase):
+    """Tests for ForgeEvaluator InspectLens path."""
+
+    def _make_evaluator(self, image_uri=None):
+        from unittest.mock import PropertyMock
+
+        mock_infra = create_autospec(SMTJRuntimeManager)
+        mock_infra.kms_key_id = None
+        mock_infra.instance_type = "ml.m5.large"
+        mock_infra.instance_count = 1
+        mock_infra.platform = Platform.SMTJ
+        mock_infra.execution_role = "arn:aws:iam::123:role/MyRole"
+        mock_infra.max_job_runtime = 7200
+
+        config = ForgeConfig(
+            output_s3_path="s3://bucket/output/",
+            image_uri=image_uri
+            or "123456789012.dkr.ecr.us-east-1.amazonaws.com/inspect-lens:beta-latest",
+        )
+
+        with (
+            patch(
+                "amzn_nova_forge.evaluator.forge_evaluator.set_output_s3_path",
+                return_value="s3://bucket/output/",
+            ),
+            patch("boto3.session.Session") as mock_session,
+            patch("boto3.client"),
+        ):
+            type(mock_session.return_value).region_name = PropertyMock(return_value="us-east-1")
+            evaluator = ForgeEvaluator(
+                model=Model.NOVA_MICRO,
+                infra=mock_infra,
+                config=config,
+            )
+        return evaluator
+
+    def test_dry_run_returns_none(self):
+        from amzn_nova_forge.evaluator.inspect_lens_config import InspectLensConfig
+
+        evaluator = self._make_evaluator()
+        config = InspectLensConfig(
+            benchmarks_path="s3://bucket/benchmarks/boolq/",
+            tasks=[{"name": "boolq_pt", "limit": 50}],
+            output_s3_path="s3://bucket/results/",
+        )
+        with (
+            patch("boto3.client"),
+            patch("amzn_nova_forge.evaluator.forge_evaluator.yaml") as mock_yaml,
+        ):
+            mock_yaml.dump.return_value = "inference_provider: {}\n"
+            result = evaluator.evaluate(
+                job_name="test-job",
+                eval_task=EvaluationTask.INSPECT_LENS,
+                inspect_lens_config=config,
+                dry_run=True,
+            )
+        self.assertIsNone(result)
+
+    def test_missing_inspect_lens_config_raises(self):
+        evaluator = self._make_evaluator()
+        with self.assertRaises(ValueError) as ctx:
+            evaluator.evaluate(
+                job_name="test-job",
+                eval_task=EvaluationTask.INSPECT_LENS,
+                inspect_lens_config=None,
+            )
+        self.assertIn("inspect_lens_config is required", str(ctx.exception))
+
+    def test_overrides_warning_for_non_decoding_keys(self):
+        from amzn_nova_forge.evaluator.inspect_lens_config import InspectLensConfig
+
+        evaluator = self._make_evaluator()
+        config = InspectLensConfig(
+            benchmarks_path="s3://bucket/benchmarks/boolq/",
+            output_s3_path="s3://bucket/results/",
+        )
+        with (
+            patch("boto3.client"),
+            patch("amzn_nova_forge.evaluator.forge_evaluator.yaml") as mock_yaml,
+            patch("amzn_nova_forge.evaluator.forge_evaluator.logger") as mock_logger,
+        ):
+            mock_yaml.dump.return_value = "inference_provider: {}\n"
+            evaluator.evaluate(
+                job_name="test-job",
+                eval_task=EvaluationTask.INSPECT_LENS,
+                inspect_lens_config=config,
+                overrides={"benchmarks_path": "s3://other/"},
+                dry_run=True,
+            )
+        # Should warn about unknown key
+        warning_calls = [str(c) for c in mock_logger.warning.call_args_list]
+        self.assertTrue(any("benchmarks_path" in w for w in warning_calls))
+
+    def test_valid_decoding_overrides_no_warning(self):
+        from amzn_nova_forge.evaluator.inspect_lens_config import InspectLensConfig
+
+        evaluator = self._make_evaluator()
+        config = InspectLensConfig(
+            benchmarks_path="s3://bucket/benchmarks/boolq/",
+            output_s3_path="s3://bucket/results/",
+        )
+        with (
+            patch("boto3.client"),
+            patch("amzn_nova_forge.evaluator.forge_evaluator.yaml") as mock_yaml,
+            patch("amzn_nova_forge.evaluator.forge_evaluator.logger") as mock_logger,
+        ):
+            mock_yaml.dump.return_value = "inference_provider: {}\n"
+            evaluator.evaluate(
+                job_name="test-job",
+                eval_task=EvaluationTask.INSPECT_LENS,
+                inspect_lens_config=config,
+                overrides={"temperature": 0.0, "max_tokens": 512, "max_connections": 4},
+                dry_run=True,
+            )
+        # No warning for valid decoding keys
+        warning_calls = [str(c) for c in mock_logger.warning.call_args_list]
+        self.assertFalse(any("overrides" in w for w in warning_calls))
+
+    def test_inference_provider_bedrock_default(self):
+        from amzn_nova_forge.evaluator.inspect_lens_config import InspectLensConfig
+
+        evaluator = self._make_evaluator()
+        config = InspectLensConfig(
+            benchmarks_path="s3://bucket/benchmarks/",
+            output_s3_path="s3://bucket/results/",
+        )
+        provider = evaluator._build_inspect_lens_inference_provider(config, model_path=None)
+        self.assertIn("bedrock", provider)
+        self.assertIn("us.amazon.nova-micro-v1:0", provider["bedrock"]["model_id"])
+
+    def test_inference_provider_existing_endpoint(self):
+        from amzn_nova_forge.evaluator.inspect_lens_config import InspectLensConfig
+
+        evaluator = self._make_evaluator()
+        config = InspectLensConfig(
+            benchmarks_path="s3://bucket/benchmarks/",
+            endpoint_name="my-endpoint",
+        )
+        provider = evaluator._build_inspect_lens_inference_provider(config, model_path=None)
+        self.assertIn("sagemaker_endpoint", provider)
+        self.assertEqual(provider["sagemaker_endpoint"]["endpoint_name"], "my-endpoint")
+
+    def test_inference_provider_model_path_overrides_bedrock(self):
+        from amzn_nova_forge.evaluator.inspect_lens_config import InspectLensConfig
+
+        evaluator = self._make_evaluator()
+        config = InspectLensConfig(
+            benchmarks_path="s3://bucket/benchmarks/",
+            output_s3_path="s3://bucket/results/",
+        )
+        provider = evaluator._build_inspect_lens_inference_provider(
+            config, model_path="us.amazon.nova-lite-v1:0"
+        )
+        self.assertIn("bedrock", provider)
+        self.assertEqual(provider["bedrock"]["model_id"], "us.amazon.nova-lite-v1:0")
+
+    def test_cache_hit_returns_cached_result(self):
+        """When job caching is enabled and a matching result exists, return it without submitting."""
+        from amzn_nova_forge.evaluator.inspect_lens_config import InspectLensConfig
+
+        evaluator = self._make_evaluator()
+        config = InspectLensConfig(
+            benchmarks_path="s3://bucket/benchmarks/boolq/",
+            tasks=[{"name": "boolq_pt", "limit": 50}],
+            output_s3_path="s3://bucket/results/",
+        )
+        mock_cached = MagicMock()
+
+        with patch(
+            "amzn_nova_forge.evaluator.forge_evaluator.load_existing_result",
+            return_value=mock_cached,
+        ) as mock_load:
+            result = evaluator.evaluate(
+                job_name="test-job",
+                eval_task=EvaluationTask.INSPECT_LENS,
+                inspect_lens_config=config,
+            )
+
+        self.assertIs(result, mock_cached)
+        mock_load.assert_called_once_with(
+            evaluator._cache_context,
+            job_name="test-job",
+            job_type="inspect_lens",
+            model_path=None,
+            benchmarks_path="s3://bucket/benchmarks/boolq/",
+            tasks=str([{"name": "boolq_pt", "limit": 50}]),
+            inference_scenario="bedrock",
+            endpoint_name=None,
+            bedrock_model_id=None,
+            overrides={},
+        )
+
+    def test_mlflow_tracking_injected_into_config_dict(self):
+        """When ForgeConfig.mlflow_monitor is set, tracking section must appear in the YAML dict."""
+        from unittest.mock import PropertyMock
+
+        from amzn_nova_forge.evaluator.inspect_lens_config import InspectLensConfig
+        from amzn_nova_forge.monitor import MLflowMonitor
+
+        mock_infra = create_autospec(SMTJRuntimeManager)
+        mock_infra.kms_key_id = None
+        mock_infra.instance_type = "ml.m5.large"
+        mock_infra.instance_count = 1
+        mock_infra.platform = Platform.SMTJ
+        mock_infra.execution_role = "arn:aws:iam::123:role/MyRole"
+        mock_infra.max_job_runtime = 7200
+
+        # Patch validate_mlflow_overrides to avoid real AWS calls during MLflowMonitor init
+        with patch(
+            "amzn_nova_forge.monitor.mlflow_monitor.validate_mlflow_overrides",
+            return_value=[],
+        ):
+            mlflow_monitor = MLflowMonitor(
+                tracking_uri="arn:aws:sagemaker:us-east-1:123456789012:mlflow-app/app-xxx",
+                experiment_name="nova-evals",
+            )
+
+        forge_config = ForgeConfig(
+            output_s3_path="s3://bucket/output/",
+            image_uri="123456789012.dkr.ecr.us-east-1.amazonaws.com/inspect-lens:beta-latest",
+            mlflow_monitor=mlflow_monitor,
+        )
+
+        with (
+            patch(
+                "amzn_nova_forge.evaluator.forge_evaluator.set_output_s3_path",
+                return_value="s3://bucket/output/",
+            ),
+            patch("boto3.session.Session") as mock_session,
+            patch("boto3.client"),
+        ):
+            type(mock_session.return_value).region_name = PropertyMock(return_value="us-east-1")
+            evaluator = ForgeEvaluator(
+                model=Model.NOVA_MICRO,
+                infra=mock_infra,
+                config=forge_config,
+            )
+
+        inspect_config = InspectLensConfig(
+            benchmarks_path="s3://bucket/benchmarks/",
+            output_s3_path="s3://bucket/results/",
+        )
+
+        captured_dict = {}
+
+        def capture_yaml_dump(d, **kwargs):
+            captured_dict.update(d)
+            return "mocked_yaml\n"
+
+        with (
+            patch("boto3.client"),
+            patch("amzn_nova_forge.evaluator.forge_evaluator.yaml") as mock_yaml,
+        ):
+            mock_yaml.dump.side_effect = capture_yaml_dump
+            evaluator.evaluate(
+                job_name="test-mlflow-job",
+                eval_task=EvaluationTask.INSPECT_LENS,
+                inspect_lens_config=inspect_config,
+                dry_run=True,
+            )
+
+        self.assertIn("tracking", captured_dict)
+        tracking = captured_dict["tracking"]
+        self.assertEqual(
+            tracking["mlflow_tracking_arn"],
+            "arn:aws:sagemaker:us-east-1:123456789012:mlflow-app/app-xxx",
+        )
+        self.assertEqual(tracking["mlflow_experiment_name"], "nova-evals")
+        self.assertTrue(tracking["mlflow_tracing"])
+        self.assertTrue(tracking["mlflow_log_artifacts"])
+
+
+class TestInspectLensS3Paths(unittest.TestCase):
+    """Tests for run_id-based S3 path layout in _evaluate_inspect_lens."""
+
+    FIXED_RUN_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+    def _make_evaluator(self, output_s3_path="s3://bucket/output/"):
+        from unittest.mock import PropertyMock
+
+        mock_infra = create_autospec(SMTJRuntimeManager)
+        mock_infra.kms_key_id = None
+        mock_infra.instance_type = "ml.m5.large"
+        mock_infra.instance_count = 1
+        mock_infra.platform = Platform.SMTJ
+        mock_infra.execution_role = "arn:aws:iam::123:role/MyRole"
+        mock_infra.max_job_runtime = 7200
+
+        config = ForgeConfig(
+            output_s3_path=output_s3_path,
+            image_uri="123456789012.dkr.ecr.us-east-1.amazonaws.com/inspect-lens:beta-latest",
+        )
+
+        with (
+            patch(
+                "amzn_nova_forge.evaluator.forge_evaluator.set_output_s3_path",
+                return_value=output_s3_path,
+            ),
+            patch("boto3.session.Session") as mock_session,
+            patch("boto3.client"),
+        ):
+            type(mock_session.return_value).region_name = PropertyMock(return_value="us-east-1")
+            evaluator = ForgeEvaluator(
+                model=Model.NOVA_MICRO,
+                infra=mock_infra,
+                config=config,
+            )
+        return evaluator
+
+    def _run_evaluate(self, evaluator, inspect_lens_config, mock_sm_client):
+        """Helper: run evaluate() with all external calls mocked."""
+        mock_sm_client.create_training_job.return_value = {}
+        with (
+            patch("amzn_nova_forge.evaluator.forge_evaluator.uuid") as mock_uuid,
+            patch("amzn_nova_forge.evaluator.forge_evaluator.yaml") as mock_yaml,
+            patch("amzn_nova_forge.evaluator.forge_evaluator.boto3") as mock_boto3,
+        ):
+            mock_uuid.uuid4.return_value = self.FIXED_RUN_ID
+            mock_yaml.dump.return_value = "inference_provider: {}\n"
+            mock_boto3.client.return_value = mock_sm_client
+            result = evaluator.evaluate(
+                job_name="test-job",
+                eval_task=EvaluationTask.INSPECT_LENS,
+                inspect_lens_config=inspect_lens_config,
+            )
+        return result, mock_sm_client
+
+    def test_local_benchmarks_path_raises_valueerror(self):
+        """Local benchmarks_path should raise ValueError — user must upload first."""
+        import os
+        import tempfile
+
+        from amzn_nova_forge.evaluator.inspect_lens_config import InspectLensConfig
+
+        evaluator = self._make_evaluator(output_s3_path="s3://bucket/output/")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with open(os.path.join(tmpdir, "boolq_pt.py"), "w") as f:
+                f.write("@task\ndef boolq_pt():\n    pass\n")
+
+            # Bypass InspectLensConfig validation to test the evaluator-level check
+            cfg = object.__new__(InspectLensConfig)
+            for field, default in InspectLensConfig.__dataclass_fields__.items():
+                try:
+                    setattr(cfg, field, default.default)
+                except Exception:
+                    setattr(cfg, field, default.default_factory())
+            cfg.benchmarks_path = tmpdir
+            cfg.tasks = [{"name": "boolq_pt"}]
+
+            with (
+                patch("amzn_nova_forge.evaluator.forge_evaluator.boto3") as mock_boto3,
+            ):
+                mock_boto3.client.return_value = MagicMock()
+                with self.assertRaises(ValueError) as ctx:
+                    evaluator.evaluate(
+                        job_name="test-job",
+                        eval_task=EvaluationTask.INSPECT_LENS,
+                        inspect_lens_config=cfg,
+                    )
+                self.assertIn("upload_benchmarks", str(ctx.exception))
+
+    def test_upload_benchmarks(self):
+        """upload_benchmarks() uploads .py files to S3 and returns the S3 URI."""
+        import os
+        import tempfile
+
+        evaluator = self._make_evaluator(output_s3_path="s3://bucket/output/")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with open(os.path.join(tmpdir, "boolq_pt.py"), "w") as f:
+                f.write("@task\ndef boolq_pt():\n    pass\n")
+            with open(os.path.join(tmpdir, "README.md"), "w") as f:
+                f.write("# not uploaded\n")
+
+            with patch("amzn_nova_forge.evaluator.forge_evaluator.boto3") as mock_boto3:
+                mock_s3 = MagicMock()
+                mock_boto3.client.return_value = mock_s3
+
+                result = evaluator.upload_benchmarks(tmpdir, "s3://bucket/my-benchmarks/")
+
+            self.assertEqual(result, "s3://bucket/my-benchmarks/")
+            mock_s3.upload_file.assert_called_once()
+            call_args = mock_s3.upload_file.call_args
+            self.assertIn("boolq_pt.py", call_args[0][0])
+            self.assertEqual(call_args[0][1], "bucket")
+            self.assertEqual(call_args[0][2], "my-benchmarks/boolq_pt.py")
+
+    def test_upload_benchmarks_invalid_local_dir_raises(self):
+        """upload_benchmarks() raises ValueError for non-existent directory."""
+        evaluator = self._make_evaluator()
+        with self.assertRaises(ValueError) as ctx:
+            evaluator.upload_benchmarks("/nonexistent/path", "s3://bucket/benchmarks/")
+        self.assertIn("not an existing directory", str(ctx.exception))
+
+    def test_upload_benchmarks_invalid_s3_path_raises(self):
+        """upload_benchmarks() raises ValueError for non-S3 path."""
+        import tempfile
+
+        evaluator = self._make_evaluator()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaises(ValueError) as ctx:
+                evaluator.upload_benchmarks(tmpdir, "/local/path/")
+            self.assertIn("s3://", str(ctx.exception))
+
+    def test_s3_benchmarks_config_colocated_with_benchmarks(self):
+        """S3 benchmarks_path in a different bucket → config and output still under output_s3_path."""
+        from amzn_nova_forge.evaluator.inspect_lens_config import InspectLensConfig
+
+        evaluator = self._make_evaluator(output_s3_path="s3://bucket/output/")
+
+        cfg = InspectLensConfig(
+            benchmarks_path="s3://separate-benchmarks-bucket/my-project/benchmarks/my_benchmarks/",
+            tasks=[{"name": "boolq_pt"}],
+        )
+
+        with (
+            patch("amzn_nova_forge.evaluator.forge_evaluator.uuid") as mock_uuid,
+            patch("amzn_nova_forge.evaluator.forge_evaluator.yaml") as mock_yaml,
+            patch("amzn_nova_forge.evaluator.forge_evaluator.boto3") as mock_boto3,
+        ):
+            mock_uuid.uuid4.return_value = self.FIXED_RUN_ID
+            mock_yaml.dump.return_value = "inference_provider: {}\n"
+            mock_s3 = MagicMock()
+            mock_boto3.client.return_value = mock_s3
+            mock_s3.create_training_job = MagicMock(return_value={})
+
+            evaluator.evaluate(
+                job_name="test-job",
+                eval_task=EvaluationTask.INSPECT_LENS,
+                inspect_lens_config=cfg,
+            )
+
+        # Config always goes under output_s3_path/<run_id>/config/ — not the separate benchmarks bucket
+        put_calls = mock_s3.put_object.call_args_list
+        config_call = next(c for c in put_calls if "inspect_config.yaml" in str(c))
+        kwargs = config_call[1]
+        self.assertEqual(kwargs["Bucket"], "bucket")
+        self.assertEqual(kwargs["Key"], f"output/{self.FIXED_RUN_ID}/config/inspect_config.yaml")
+
+        # SageMaker output also under output_s3_path/<run_id>/output/
+        create_call = mock_s3.create_training_job.call_args
+        output_path = create_call[1]["OutputDataConfig"]["S3OutputPath"]
+        self.assertEqual(output_path, f"s3://bucket/output/{self.FIXED_RUN_ID}/output/")
+
+    def test_run_id_in_job_name(self):
+        """unique_job_name should contain the run_id UUID."""
+        from amzn_nova_forge.evaluator.inspect_lens_config import InspectLensConfig
+
+        evaluator = self._make_evaluator()
+
+        cfg = InspectLensConfig(
+            benchmarks_path="s3://bucket/benchmarks/",
+            tasks=[{"name": "boolq_pt"}],
+        )
+
+        with (
+            patch("amzn_nova_forge.evaluator.forge_evaluator.uuid") as mock_uuid,
+            patch("amzn_nova_forge.evaluator.forge_evaluator.yaml") as mock_yaml,
+            patch("amzn_nova_forge.evaluator.forge_evaluator.boto3") as mock_boto3,
+        ):
+            mock_uuid.uuid4.return_value = self.FIXED_RUN_ID
+            mock_yaml.dump.return_value = "inference_provider: {}\n"
+            mock_s3 = MagicMock()
+            mock_boto3.client.return_value = mock_s3
+            mock_s3.create_training_job = MagicMock(return_value={})
+
+            result = evaluator.evaluate(
+                job_name="my-eval",
+                eval_task=EvaluationTask.INSPECT_LENS,
+                inspect_lens_config=cfg,
+            )
+
+        self.assertIn(self.FIXED_RUN_ID, result.job_id)
+        self.assertTrue(result.job_id.startswith("my-eval-"))
+
+    def test_s3_benchmarks_bucket_only_path(self):
+        """S3 benchmarks_path in a separate bucket → output still goes under output_s3_path."""
+        from amzn_nova_forge.evaluator.inspect_lens_config import InspectLensConfig
+
+        evaluator = self._make_evaluator(output_s3_path="s3://bucket/output/")
+
+        cfg = InspectLensConfig(
+            benchmarks_path="s3://separate-benchmarks-bucket/benchmarks/",
+            tasks=[{"name": "boolq_pt"}],
+        )
+
+        with (
+            patch("amzn_nova_forge.evaluator.forge_evaluator.uuid") as mock_uuid,
+            patch("amzn_nova_forge.evaluator.forge_evaluator.yaml") as mock_yaml,
+            patch("amzn_nova_forge.evaluator.forge_evaluator.boto3") as mock_boto3,
+        ):
+            mock_uuid.uuid4.return_value = self.FIXED_RUN_ID
+            mock_yaml.dump.return_value = "inference_provider: {}\n"
+            mock_s3 = MagicMock()
+            mock_boto3.client.return_value = mock_s3
+            mock_s3.create_training_job = MagicMock(return_value={})
+
+            evaluator.evaluate(
+                job_name="test-job",
+                eval_task=EvaluationTask.INSPECT_LENS,
+                inspect_lens_config=cfg,
+            )
+
+        # parent of s3://separate-benchmarks-bucket/benchmarks/ → s3://separate-benchmarks-bucket/
+        create_call = mock_s3.create_training_job.call_args
+        output_path = create_call[1]["OutputDataConfig"]["S3OutputPath"]
+        # Output always goes under output_s3_path, not the benchmarks bucket
+        self.assertEqual(output_path, f"s3://bucket/output/{self.FIXED_RUN_ID}/output/")
+
+
 if __name__ == "__main__":
     unittest.main()

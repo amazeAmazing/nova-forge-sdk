@@ -507,8 +507,19 @@ def find_sagemaker_model_by_tag(escrow_uri: str, sagemaker_client: BaseClient) -
             ResourceTypeFilters=["sagemaker:model"],
         )
         results = response.get("ResourceTagMappingList", [])
-        if results:
+        if len(results) == 1:
             return results[0]["ResourceARN"]
+        if len(results) > 1:
+            # Multiple models share the same tag (e.g. from repeated test runs).
+            # Return the most recently created one to avoid stale dedup hits.
+            def _creation_time(arn: str) -> Any:
+                try:
+                    model_name = arn.split("/")[-1]
+                    return sagemaker_client.describe_model(ModelName=model_name)["CreationTime"]
+                except Exception:
+                    return datetime.min.replace(tzinfo=timezone.utc)
+
+            return max((r["ResourceARN"] for r in results), key=_creation_time)
     except ClientError as e:
         logger.warning(
             f"Could not search SageMaker models by tag (may lack tag:GetResources permission): {e}"
